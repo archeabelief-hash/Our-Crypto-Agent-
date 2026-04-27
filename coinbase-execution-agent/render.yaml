@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: coinbase-magician-paper-agent
+    env: node
+    plan: free
+    rootDir: coinbase-execution-agent
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: MODE
+        value: PAPER
+      - key: NODE_ENV
+        value: production
