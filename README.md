@@ -4,46 +4,51 @@ Real-time Coinbase market analytics dashboard with paper-mode simulation.
 
 ---
 
-# 🔗 Live App Pages
+# 🌐 LIVE APP (USE THIS LINK)
 
-Use these links directly (no need to ask again):
+👉 **Home Dashboard:**  
+https://archeabelief-hash.github.io/Our-Crypto-Agent-/home.html
+
+---
+
+# 🔗 Live App Pages
 
 ## 🧠 Core Pages
 
 - **Home (Dashboard)**  
-  `/home.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/home.html
 
 - **Live Decision V2 (Main Scanner)**  
-  `/live-decision-v2.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/live-decision-v2.html
 
 - **Adaptive Trade Tracker (V4)**  
-  `/agent-trade-tracker-v4.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/agent-trade-tracker-v4.html
 
 ---
 
 ## 📊 Analysis Tools
 
 - **Manual Analyzer**  
-  `/manual-selected.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/manual-selected.html
 
 - **Liquidity PnL Engine**  
-  `/liquidity-pnl-engine.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/liquidity-pnl-engine.html
 
 - **Wave Test (Manual Trade Copy Tool)**  
-  `/live-wave-test.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/live-wave-test.html
 
 ---
 
 ## 🧪 Legacy / Reference
 
 - **Live Decision V1**  
-  `/live-decision.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/live-decision.html
 
 - **Trade Tracker V2**  
-  `/agent-trade-tracker-v2.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/agent-trade-tracker-v2.html
 
 - **Trade Tracker V3 (Fixed Size)**  
-  `/agent-trade-tracker-v3.html`
+  https://archeabelief-hash.github.io/Our-Crypto-Agent-/agent-trade-tracker-v3.html
 
 ---
 
@@ -54,7 +59,7 @@ Use these links directly (no need to ask again):
 Open:
 
 ```text
-/home.html
+https://archeabelief-hash.github.io/Our-Crypto-Agent-/home.html
 ```
 
 ---
@@ -64,7 +69,7 @@ Open:
 Go to:
 
 ```text
-/live-decision-v2.html
+https://archeabelief-hash.github.io/Our-Crypto-Agent-/live-decision-v2.html
 ```
 
 Wait for:
@@ -80,7 +85,7 @@ READY LONG
 Open:
 
 ```text
-/agent-trade-tracker-v4.html
+https://archeabelief-hash.github.io/Our-Crypto-Agent-/agent-trade-tracker-v4.html
 ```
 
 This will:
