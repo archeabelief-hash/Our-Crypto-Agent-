@@ -1,3 +1,4 @@
 python-dotenv
 requests
 sqlite-utils
+coinbase-advanced-py
