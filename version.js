@@ -1,4 +1,4 @@
-const APP_VERSION = '2026-04-28-clean-ui-v1';
+const APP_VERSION = '2026-04-28-target-optimizer-v1';
 
 (function(){
   const links = document.querySelectorAll('a[href$=".html"]');
@@ -29,7 +29,8 @@ const APP_VERSION = '2026-04-28-clean-ui-v1';
   if (path.endsWith('home.html') || path.endsWith('/')) {
     relabelLinks({
       'live-decision-v2.html': 'AI Trade Engine',
-      'agent-trade-tracker-v4.html': 'Execution Tracker',
+      'execution-tracker.html': 'Execution Tracker',
+      'agent-trade-tracker-v4.html': 'Legacy Execution Tracker',
       'manual-selected.html': 'Manual Analyzer',
       'liquidity-pnl-engine.html': 'Liquidity PnL',
       'live-wave-test.html': 'Wave Test',
@@ -42,7 +43,6 @@ const APP_VERSION = '2026-04-28-clean-ui-v1';
     document.title = 'AI Trade Engine';
     setText('h1', 'AI Trade Engine');
     setText('section.card h2', 'Engine Controls');
-    setText('#decision + .small', 'Loading Coinbase book.');
     relabelLinks({
       'home.html': 'Home',
       'live-decision.html': 'Legacy Scanner',
@@ -62,7 +62,7 @@ const APP_VERSION = '2026-04-28-clean-ui-v1';
     });
   }
 
-  if (path.endsWith('agent-trade-tracker-v4.html')) {
+  if (path.endsWith('agent-trade-tracker-v4.html') || path.endsWith('execution-tracker.html')) {
     document.title = 'Execution Tracker';
     setText('h1', 'Execution Tracker');
     relabelLinks({
@@ -71,15 +71,137 @@ const APP_VERSION = '2026-04-28-clean-ui-v1';
       'liquidity-pnl-engine.html': 'Liquidity PnL',
       'agent-trade-tracker-v3.html': 'Legacy Tracker'
     });
-    const subtitle = document.querySelector('.top .small');
-    if (subtitle) subtitle.textContent = 'Reads the AI Trade Engine, accepts READY LONG only, sweeps liquidity tiers, picks the best profitable size under your max buy-in, then opens paper trades. No real trades are placed.';
-    document.querySelectorAll('h2').forEach(h => {
-      h.textContent = h.textContent
-        .replace('Open Adaptive Paper Trades', 'Open Execution Tests')
-        .replace('Closed Paper Trades', 'Closed Execution Tests')
-        .replace('Tracker JSON', 'Execution JSON');
+  }
+})();
+
+(function(){
+  if (!location.pathname.endsWith('execution-tracker.html')) return;
+
+  const STORAGE_KEY = 'executionTrackerActiveV1';
+  const MIN_SAMPLES = 4;
+
+  function read(){
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{"open":[],"closed":[],"blocked":[]}'); }
+    catch (_) { return { open: [], closed: [], blocked: [] }; }
+  }
+
+  function write(state){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  function usd(n){
+    return Number.isFinite(n) ? '$' + n.toLocaleString(undefined,{maximumFractionDigits:2}) : '—';
+  }
+
+  function fmt(n){
+    return Number.isFinite(n) ? n.toLocaleString(undefined,{maximumFractionDigits:Math.abs(n)>=1?6:8}) : '—';
+  }
+
+  function ratioForTrade(t){
+    const planned = (Number(t.target) - Number(t.entry)) * Number(t.qty || 0);
+    if (!Number.isFinite(planned) || planned <= 0) return null;
+    const mfe = Number(t.mfe || 0);
+    return Math.max(0, mfe / planned);
+  }
+
+  function groupedStats(state){
+    const groups = {};
+    (state.closed || []).forEach(t => {
+      if (!t || !t.tf) return;
+      const r = ratioForTrade(t);
+      if (r === null) return;
+      if (!groups[t.tf]) groups[t.tf] = [];
+      groups[t.tf].push({ ratio: r, win: Number(t.pnl || 0) >= 0 });
+    });
+    const out = {};
+    Object.keys(groups).forEach(tf => {
+      const rows = groups[tf].slice(-50);
+      const ratios = rows.map(x => x.ratio).sort((a,b)=>a-b);
+      const avg = ratios.reduce((s,x)=>s+x,0) / ratios.length;
+      const p50 = ratios[Math.floor(ratios.length * 0.50)] || 0;
+      const p70 = ratios[Math.floor(ratios.length * 0.70)] || p50;
+      const hitRate = rows.filter(x => x.win).length / rows.length;
+      let multiplier = 1;
+      if (rows.length >= MIN_SAMPLES) {
+        if (hitRate < 0.35) multiplier = Math.max(0.35, Math.min(0.85, p70 * 0.92));
+        else if (hitRate < 0.50) multiplier = Math.max(0.50, Math.min(0.95, p70));
+        else if (hitRate > 0.70 && avg > 1.15) multiplier = 1.08;
+        else multiplier = Math.max(0.65, Math.min(1.05, p70));
+      }
+      out[tf] = { samples: rows.length, avg, p50, p70, hitRate, multiplier };
+    });
+    return out;
+  }
+
+  function optimizeOpenTargets(){
+    const state = read();
+    const stats = groupedStats(state);
+    let changed = false;
+    (state.open || []).forEach(t => {
+      const s = stats[t.tf];
+      if (!s || s.samples < MIN_SAMPLES) return;
+      if (!Number.isFinite(Number(t.originalTarget))) t.originalTarget = Number(t.target);
+      const baseMove = Number(t.originalTarget) - Number(t.entry);
+      if (!Number.isFinite(baseMove) || baseMove <= 0) return;
+      const suggested = Number(t.entry) + baseMove * s.multiplier;
+      if (suggested > Number(t.entry) && suggested < Number(t.target) * 1.2) {
+        t.target = suggested;
+        t.adaptiveTarget = suggested;
+        t.targetMultiplier = s.multiplier;
+        t.targetOptimizerSamples = s.samples;
+        changed = true;
+      }
+    });
+    if (changed) write(state);
+    return { state, stats };
+  }
+
+  function panelHtml(stats){
+    const keys = Object.keys(stats);
+    if (!keys.length) return '<div class="small">Waiting for closed trades with MFE data. Need at least 4 samples per timeframe before auto-adjusting targets.</div>';
+    return keys.map(tf => {
+      const s = stats[tf];
+      const ready = s.samples >= MIN_SAMPLES;
+      return `<div class="order ${ready?'open':'block'}"><b>${tf}</b> <span class="pill ${ready?'pill-good':'pill-warn'}">${ready?'ACTIVE':'LEARNING'}</span><br>Samples ${s.samples} | Hit Rate ${(s.hitRate*100).toFixed(1)}%<br>Avg MFE ${(s.avg*100).toFixed(1)}% of target | P70 ${(s.p70*100).toFixed(1)}%<br>Suggested Target Multiplier <b>${s.multiplier.toFixed(2)}x</b><br>${ready?'Open trades in this TF are adjusted toward this target.':'Needs more closed trades.'}</div>`;
+    }).join('');
+  }
+
+  function renderOptimizer(){
+    const result = optimizeOpenTargets();
+    let card = document.getElementById('targetOptimizerCard');
+    const summaryCard = Array.from(document.querySelectorAll('section.card')).find(s => (s.querySelector('h2')||{}).textContent === 'Summary');
+    if (!card && summaryCard) {
+      card = document.createElement('section');
+      card.className = 'card';
+      card.id = 'targetOptimizerCard';
+      card.innerHTML = '<h2>Adaptive Target Optimizer</h2><div class="small">Uses closed-trade MFE and hit-rate data to tighten unrealistic targets by timeframe. This improves paper evaluation before live execution.</div><div id="targetOptimizerRows" class="orders" style="margin-top:10px"></div>';
+      summaryCard.insertAdjacentElement('afterend', card);
+    }
+    const rows = document.getElementById('targetOptimizerRows');
+    if (rows) rows.innerHTML = panelHtml(result.stats);
+
+    document.querySelectorAll('#openList .order.open').forEach(card => {
+      if (card.textContent.includes('Adaptive Target')) return;
+      const state = read();
+      const idx = Array.from(document.querySelectorAll('#openList .order.open')).indexOf(card);
+      const t = (state.open || [])[idx];
+      if (!t || !t.adaptiveTarget) return;
+      const note = document.createElement('div');
+      note.style.marginTop = '6px';
+      note.style.padding = '6px 8px';
+      note.style.border = '1px solid #18e59a66';
+      note.style.borderRadius = '10px';
+      note.style.background = '#18e59a12';
+      note.style.color = '#18e59a';
+      note.style.fontWeight = '900';
+      note.style.fontSize = '12px';
+      note.textContent = `Adaptive Target: ${fmt(t.adaptiveTarget)} (${Number(t.targetMultiplier||1).toFixed(2)}x, ${t.targetOptimizerSamples} samples)`;
+      card.appendChild(note);
     });
   }
+
+  setInterval(renderOptimizer, 3000);
+  setTimeout(renderOptimizer, 700);
 })();
 
 (function(){
