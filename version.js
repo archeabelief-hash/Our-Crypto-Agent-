@@ -1,11 +1,9 @@
-const APP_VERSION = '2026-04-28-engine-target-optimizer-v1';
+const APP_VERSION = '2026-04-28-clean-active-ui-v2';
 
 (function(){
   const links = document.querySelectorAll('a[href$=".html"]');
   links.forEach(link => {
-    if (!link.href.includes('?v=')) {
-      link.href = link.href + '?v=' + APP_VERSION;
-    }
+    if (!link.href.includes('?v=')) link.href = link.href + '?v=' + APP_VERSION;
   });
 })();
 
@@ -61,50 +59,68 @@ function buildAdaptiveTargetStats(){
     });
   }
 
-  if (path.endsWith('home.html') || path.endsWith('/')) {
+  function hideLegacyLinks(){
+    const legacy = ['live-decision.html','agent-trade-tracker-v2.html','agent-trade-tracker-v3.html','agent-trade-tracker-v4.html'];
+    document.querySelectorAll('a').forEach(a => {
+      const raw = a.getAttribute('href') || '';
+      if (legacy.some(x => raw.includes(x))) a.style.display = 'none';
+    });
+  }
+
+  function cleanCommonLabels(){
     relabelLinks({
+      'home.html': 'Home',
       'live-decision-v2.html': 'AI Trade Engine',
       'execution-tracker.html': 'Execution Tracker',
-      'agent-trade-tracker-v4.html': 'Legacy Execution Tracker',
       'manual-selected.html': 'Manual Analyzer',
       'liquidity-pnl-engine.html': 'Liquidity PnL',
       'live-wave-test.html': 'Wave Test',
       'agent.html': 'Agent View',
       'install.html': 'Install'
     });
+    hideLegacyLinks();
+  }
+
+  cleanCommonLabels();
+
+  if (path.endsWith('home.html') || path.endsWith('/')) {
+    const footer = document.querySelector('.footer');
+    if (footer) footer.textContent = 'Coinbase Magician — active stack only';
   }
 
   if (path.endsWith('live-decision-v2.html')) {
     document.title = 'AI Trade Engine';
     setText('h1', 'AI Trade Engine');
     setText('section.card h2', 'Engine Controls');
-    relabelLinks({
-      'home.html': 'Home',
-      'live-decision.html': 'Legacy Scanner',
-      'agent-trade-tracker-v2.html': 'Legacy Tracker',
-      'manual-selected.html': 'Manual Analyzer'
-    });
     const subtitle = document.querySelector('.top .small');
-    if (subtitle) subtitle.textContent = 'Behavior-aware trade engine with adaptive target feedback from Execution Tracker MFE and hit-rate history.';
+    if (subtitle) subtitle.textContent = 'Behavior-aware trade engine with adaptive targets, entry timing read, liquidity filters, spread-spike protection, and momentum diagnostics.';
+    const reset = document.getElementById('resetMemory');
+    if (reset) reset.textContent = 'Reset Engine Memory';
     document.querySelectorAll('h2').forEach(h => {
       h.textContent = h.textContent
         .replace('Best V2 Decision', 'Best AI Trade Decision')
         .replace('V2 Interval Scanner', 'AI Interval Scanner')
         .replace('V2 Diagnostics', 'Engine Diagnostics');
     });
-    document.querySelectorAll('.label').forEach(el => {
-      el.textContent = el.textContent.replace('Score V2', 'Engine Score');
+    document.querySelectorAll('.label').forEach(el => { el.textContent = el.textContent.replace('Score V2', 'Engine Score'); });
+  }
+
+  if (path.endsWith('execution-tracker.html')) {
+    document.title = 'Execution Tracker';
+    setText('h1', 'Execution Tracker');
+  }
+
+  if (path.endsWith('liquidity-pnl-engine.html')) {
+    relabelLinks({'live-decision.html':'AI Trade Engine','manual-selected.html':'Manual Analyzer'});
+    document.querySelectorAll('a').forEach(a => {
+      if ((a.getAttribute('href') || '').includes('live-decision.html')) a.setAttribute('href','live-decision-v2.html');
     });
   }
 
-  if (path.endsWith('agent-trade-tracker-v4.html') || path.endsWith('execution-tracker.html')) {
-    document.title = 'Execution Tracker';
-    setText('h1', 'Execution Tracker');
-    relabelLinks({
-      'home.html': 'Home',
-      'live-decision-v2.html': 'AI Trade Engine',
-      'liquidity-pnl-engine.html': 'Liquidity PnL',
-      'agent-trade-tracker-v3.html': 'Legacy Tracker'
+  if (path.endsWith('live-wave-test.html')) {
+    relabelLinks({'live-decision.html':'AI Trade Engine','manual-selected.html':'Manual Analyzer','agent.html':'Agent View'});
+    document.querySelectorAll('a').forEach(a => {
+      if ((a.getAttribute('href') || '').includes('live-decision.html')) a.setAttribute('href','live-decision-v2.html');
     });
   }
 })();
@@ -143,8 +159,7 @@ function buildAdaptiveTargetStats(){
     const pre = document.getElementById('json');
     if (!pre || !pre.textContent || pre.textContent.includes('targetOptimizerApplied')) return;
     let data;
-    try { data = JSON.parse(pre.textContent); }
-    catch (_) { return; }
+    try { data = JSON.parse(pre.textContent); } catch (_) { return; }
     const stats = buildAdaptiveTargetStats();
     let applied = 0;
     if (Array.isArray(data.allIntervals)) {
@@ -192,20 +207,9 @@ function buildAdaptiveTargetStats(){
   if (!location.pathname.endsWith('execution-tracker.html')) return;
 
   const STORAGE_KEY = 'executionTrackerActiveV1';
-  const MIN_SAMPLES = 4;
-
-  function read(){
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{"open":[],"closed":[],"blocked":[]}'); }
-    catch (_) { return { open: [], closed: [], blocked: [] }; }
-  }
-
-  function write(state){
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }
-
-  function fmt(n){
-    return Number.isFinite(n) ? n.toLocaleString(undefined,{maximumFractionDigits:Math.abs(n)>=1?6:8}) : '—';
-  }
+  function read(){ try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{"open":[],"closed":[],"blocked":[]}'); } catch (_) { return { open: [], closed: [], blocked: [] }; } }
+  function write(state){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  function fmt(n){ return Number.isFinite(n) ? n.toLocaleString(undefined,{maximumFractionDigits:Math.abs(n)>=1?6:8}) : '—'; }
 
   function optimizeOpenTargets(){
     const state = read();
@@ -230,15 +234,6 @@ function buildAdaptiveTargetStats(){
     return { state, stats };
   }
 
-  function panelHtml(stats){
-    const keys = Object.keys(stats);
-    if (!keys.length) return '<div class="small">Waiting for closed trades with MFE data. Need at least 4 samples per timeframe before auto-adjusting targets.</div>';
-    return keys.map(tf => {
-      const s = stats[tf];
-      return `<div class="order ${s.active?'open':'block'}"><b>${tf}</b> <span class="pill ${s.active?'pill-good':'pill-warn'}">${s.active?'ACTIVE':'LEARNING'}</span><br>Samples ${s.samples} | Hit Rate ${(s.hitRate*100).toFixed(1)}%<br>Avg MFE ${(s.avg*100).toFixed(1)}% of target | P70 ${(s.p70*100).toFixed(1)}%<br>Suggested Target Multiplier <b>${s.multiplier.toFixed(2)}x</b><br>${s.active?'AI Trade Engine JSON now uses this target feedback.':'Needs more closed trades.'}</div>`;
-    }).join('');
-  }
-
   function renderOptimizer(){
     const result = optimizeOpenTargets();
     let card = document.getElementById('targetOptimizerCard');
@@ -247,11 +242,17 @@ function buildAdaptiveTargetStats(){
       card = document.createElement('section');
       card.className = 'card';
       card.id = 'targetOptimizerCard';
-      card.innerHTML = '<h2>Adaptive Target Optimizer</h2><div class="small">Uses closed-trade MFE and hit-rate data to tighten unrealistic targets by timeframe. This now feeds back into the AI Trade Engine JSON.</div><div id="targetOptimizerRows" class="orders" style="margin-top:10px"></div>';
+      card.innerHTML = '<h2>Adaptive Target Optimizer</h2><div class="small">Uses closed-trade MFE and hit-rate data to tighten unrealistic targets by timeframe. This feeds back into the AI Trade Engine JSON.</div><div id="targetOptimizerRows" class="orders" style="margin-top:10px"></div>';
       summaryCard.insertAdjacentElement('afterend', card);
     }
     const rows = document.getElementById('targetOptimizerRows');
-    if (rows) rows.innerHTML = panelHtml(result.stats);
+    if (rows) {
+      const keys = Object.keys(result.stats);
+      rows.innerHTML = keys.length ? keys.map(tf => {
+        const s = result.stats[tf];
+        return `<div class="order ${s.active?'open':'block'}"><b>${tf}</b> <span class="pill ${s.active?'pill-good':'pill-warn'}">${s.active?'ACTIVE':'LEARNING'}</span><br>Samples ${s.samples} | Hit Rate ${(s.hitRate*100).toFixed(1)}%<br>Avg MFE ${(s.avg*100).toFixed(1)}% of target | P70 ${(s.p70*100).toFixed(1)}%<br>Target Multiplier <b>${s.multiplier.toFixed(2)}x</b></div>`;
+      }).join('') : '<div class="small">Waiting for closed trades with MFE data.</div>';
+    }
 
     document.querySelectorAll('#openList .order.open').forEach(card => {
       if (card.textContent.includes('Adaptive Target')) return;
@@ -260,14 +261,7 @@ function buildAdaptiveTargetStats(){
       const t = (state.open || [])[idx];
       if (!t || !t.adaptiveTarget) return;
       const note = document.createElement('div');
-      note.style.marginTop = '6px';
-      note.style.padding = '6px 8px';
-      note.style.border = '1px solid #18e59a66';
-      note.style.borderRadius = '10px';
-      note.style.background = '#18e59a12';
-      note.style.color = '#18e59a';
-      note.style.fontWeight = '900';
-      note.style.fontSize = '12px';
+      note.style.marginTop = '6px'; note.style.padding = '6px 8px'; note.style.border = '1px solid #18e59a66'; note.style.borderRadius = '10px'; note.style.background = '#18e59a12'; note.style.color = '#18e59a'; note.style.fontWeight = '900'; note.style.fontSize = '12px';
       note.textContent = `Adaptive Target: ${fmt(t.adaptiveTarget)} (${Number(t.targetMultiplier||1).toFixed(2)}x, ${t.targetOptimizerSamples} samples)`;
       card.appendChild(note);
     });
