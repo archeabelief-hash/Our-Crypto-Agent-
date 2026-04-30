@@ -32,9 +32,66 @@ class ExecutionLifecycle:
         if self.positions.has_open_pair(pair):
             return {"status": "BLOCKED", "reason": "PAIR_ALREADY_OPEN"}
 
-        base_size = amount / entry
+        chunk_count = max(1, min(5, int(self.config.get("twap_chunks", 3))))
+        chunk_amount = amount / chunk_count
+        filled_size = 0.0
+        filled_notional = 0.0
+        fills = []
+
+        for chunk_index in range(chunk_count):
+            result = self._submit_entry_chunk(
+                pair=pair,
+                best=best,
+                entry=entry,
+                chunk_amount=chunk_amount,
+                chunk_index=chunk_index,
+            )
+            fills.append(result)
+            if result.get("filled"):
+                size = float(result.get("base_size", 0))
+                price = float(result.get("average_price", entry))
+                filled_size += size
+                filled_notional += size * price
+
+            if chunk_index < chunk_count - 1:
+                time.sleep(max(1, int(self.config.get("twap_delay_seconds", 4))))
+
+        if filled_size <= 0:
+            return {"status": "UNFILLED", "fills": fills, "allocation": allocation}
+
+        target_size = amount / entry
+        fill_ratio = filled_size / target_size if target_size else 0
+        min_ratio = float(self.config.get("min_partial_fill_ratio", 0.35))
+        if fill_ratio < min_ratio:
+            return {
+                "status": "PARTIAL_TOO_SMALL",
+                "fill_ratio": fill_ratio,
+                "filled_size": filled_size,
+                "fills": fills,
+                "allocation": allocation,
+            }
+
+        avg_entry = filled_notional / filled_size
+        position = self.positions.open_position(
+            pair=pair,
+            base_size=filled_size,
+            entry_price=avg_entry,
+            target=target,
+            stop=stop,
+            source_signal={
+                **signal,
+                "allocation": allocation,
+                "refined_entry": entry,
+                "fills": fills,
+                "fill_ratio": fill_ratio,
+            },
+        )
+        return {"status": "POSITION_OPEN", "position": position, "allocation": allocation, "fills": fills}
+
+    def _submit_entry_chunk(self, pair, best, entry, chunk_amount, chunk_index):
         timeout = int(self.config.get("order_timeout_seconds", 35))
         max_reprices = int(self.config.get("max_reprices", 1))
+        base_size = chunk_amount / entry
 
         for attempt in range(max_reprices + 1):
             limit_price = self._entry_price(entry, attempt)
@@ -42,33 +99,28 @@ class ExecutionLifecycle:
                 product_id=pair,
                 base_size=base_size,
                 limit_price=limit_price,
-                client_order_id=self._client_id(pair, best, attempt),
+                client_order_id=self._client_id(pair, best, f"{chunk_index}-{attempt}"),
             )
-            log("ENTRY_ORDER_SUBMITTED", {"order": order, "allocation": allocation})
+            log("ENTRY_CHUNK_SUBMITTED", {"chunk": chunk_index, "attempt": attempt, "order": order})
 
             if order.get("error"):
-                return {"status": "ORDER_ERROR", "error": order.get("error")}
+                return {"filled": False, "error": order.get("error"), "chunk": chunk_index}
 
             filled = self._wait_for_fill(order, timeout)
             if filled.get("filled"):
                 avg = float(filled.get("average_price") or limit_price)
-                position = self.positions.open_position(
-                    pair=pair,
-                    base_size=base_size,
-                    entry_price=avg,
-                    target=target,
-                    stop=stop,
-                    source_signal={**signal, "allocation": allocation, "refined_entry": entry},
-                )
-                return {"status": "POSITION_OPEN", "position": position, "allocation": allocation}
+                return {
+                    "filled": True,
+                    "chunk": chunk_index,
+                    "base_size": base_size,
+                    "average_price": avg,
+                    "order": order,
+                }
 
             cancel_result = self.adapter.cancel_order(order.get("order_id"))
-            log("ENTRY_ORDER_CANCELLED", cancel_result)
+            log("ENTRY_CHUNK_CANCELLED", {"chunk": chunk_index, "cancel": cancel_result})
 
-            if attempt >= max_reprices:
-                return {"status": "CANCELLED_UNFILLED", "attempts": attempt + 1, "allocation": allocation}
-
-        return {"status": "NO_ACTION"}
+        return {"filled": False, "chunk": chunk_index}
 
     def manage_positions(self):
         results = []
@@ -130,6 +182,6 @@ class ExecutionLifecycle:
     def _entry_price(self, entry, attempt):
         return round(entry * (1 + attempt * 0.0002), 8)
 
-    def _client_id(self, pair, best, attempt):
+    def _client_id(self, pair, best, suffix):
         tf = best.get("tf", "TF")
-        return f"entry-{pair}-{tf}-{int(time.time())}-{attempt}"
+        return f"entry-{pair}-{tf}-{int(time.time())}-{suffix}"
