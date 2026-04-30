@@ -2,6 +2,7 @@ import time
 from agent.coinbase_adapter import CoinbaseAdapter
 from agent.logger import log
 from agent.position_manager import PositionManager
+from agent.capital_allocator import allocate_capital
 
 
 class ExecutionLifecycle:
@@ -14,12 +15,19 @@ class ExecutionLifecycle:
         return self.positions.open_count()
 
     def process_signal(self, signal):
+        allocation = allocate_capital(signal, self.config)
+        if not allocation.get("allowed"):
+            return {"status": "BLOCKED", "reason": allocation.get("reason"), "allocation": allocation}
+
         best = signal.get("best", {})
         pair = signal.get("pair")
-        amount = float(signal.get("amount", 0))
-        entry = float(best.get("entry", 0))
+        amount = float(allocation.get("amount", 0))
+        entry = self._refined_entry(float(best.get("entry", 0)), signal)
         target = float(best.get("target", 0))
         stop = float(best.get("stop", 0))
+
+        if not pair or entry <= 0 or target <= 0 or stop <= 0 or amount <= 0:
+            return {"status": "BLOCKED", "reason": "BAD_SIGNAL_VALUES"}
 
         if self.positions.has_open_pair(pair):
             return {"status": "BLOCKED", "reason": "PAIR_ALREADY_OPEN"}
@@ -28,7 +36,6 @@ class ExecutionLifecycle:
         timeout = int(self.config.get("order_timeout_seconds", 35))
         max_reprices = int(self.config.get("max_reprices", 1))
 
-        order = None
         for attempt in range(max_reprices + 1):
             limit_price = self._entry_price(entry, attempt)
             order = self.adapter.place_post_only_limit_buy(
@@ -37,25 +44,29 @@ class ExecutionLifecycle:
                 limit_price=limit_price,
                 client_order_id=self._client_id(pair, best, attempt),
             )
-            log("ENTRY_ORDER_SUBMITTED", order)
+            log("ENTRY_ORDER_SUBMITTED", {"order": order, "allocation": allocation})
+
+            if order.get("error"):
+                return {"status": "ORDER_ERROR", "error": order.get("error")}
 
             filled = self._wait_for_fill(order, timeout)
             if filled.get("filled"):
+                avg = float(filled.get("average_price") or limit_price)
                 position = self.positions.open_position(
                     pair=pair,
                     base_size=base_size,
-                    entry_price=filled.get("average_price", limit_price),
+                    entry_price=avg,
                     target=target,
                     stop=stop,
-                    source_signal=signal,
+                    source_signal={**signal, "allocation": allocation, "refined_entry": entry},
                 )
-                return {"status": "POSITION_OPEN", "position": position}
+                return {"status": "POSITION_OPEN", "position": position, "allocation": allocation}
 
             cancel_result = self.adapter.cancel_order(order.get("order_id"))
             log("ENTRY_ORDER_CANCELLED", cancel_result)
 
             if attempt >= max_reprices:
-                return {"status": "CANCELLED_UNFILLED", "attempts": attempt + 1}
+                return {"status": "CANCELLED_UNFILLED", "attempts": attempt + 1, "allocation": allocation}
 
         return {"status": "NO_ACTION"}
 
@@ -101,8 +112,22 @@ class ExecutionLifecycle:
             time.sleep(2)
         return {"filled": False, "order_id": order_id}
 
+    def _refined_entry(self, entry, signal):
+        diagnostics = signal.get("diagnostics", {})
+        best = signal.get("best", {})
+        acceleration = float(diagnostics.get("acceleration", 0) or 0)
+        imbalance = float(diagnostics.get("imbalance", diagnostics.get("im", 0)) or 0)
+        sniper_quality = float(best.get("sniper", {}).get("quality", diagnostics.get("sniperQuality", 0.5)) or 0.5)
+
+        if sniper_quality < 0.68:
+            return round(entry * 0.9997, 8)
+        if acceleration < 0:
+            return round(entry * 0.9998, 8)
+        if imbalance > 20 and acceleration > 0:
+            return round(entry * 1.0001, 8)
+        return round(entry, 8)
+
     def _entry_price(self, entry, attempt):
-        # Maker-first: do not chase aggressively. Each reprice improves only 0.02%.
         return round(entry * (1 + attempt * 0.0002), 8)
 
     def _client_id(self, pair, best, attempt):
