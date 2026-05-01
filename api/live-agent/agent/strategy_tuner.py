@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from agent.pattern_memory import score_pattern
 
 PERFORMANCE_FILE = Path("data/performance.json")
 TUNER_FILE = Path("data/strategy_tuner.json")
@@ -54,7 +55,7 @@ def _performance():
     }
 
 
-def update_tuner_state():
+def update_tuner_state(signal=None):
     perf = _performance()
     state = _read_json(TUNER_FILE, DEFAULT_STATE)
 
@@ -91,22 +92,31 @@ def update_tuner_state():
         size_multiplier *= 0.85
         reason = "TIGHTEN_DRAWDOWN"
 
+    pattern_bias = 0
+    pattern_size = 1.0
+    pattern_state = None
+    if signal:
+        pattern_state = score_pattern(signal)
+        pattern_bias = pattern_state.get("bias", 0)
+        pattern_size = pattern_state.get("size_bias", 1.0)
+
     state.update({
-        "min_signal_score_delta": max(-8, min(18, score_delta)),
+        "min_signal_score_delta": max(-8, min(18, score_delta + pattern_bias)),
         "min_sniper_quality_delta": max(-0.03, min(0.08, sniper_delta)),
-        "size_multiplier": round(max(0.35, min(1.25, size_multiplier)), 4),
-        "last_reason": reason,
+        "size_multiplier": round(max(0.35, min(1.25, size_multiplier * pattern_size)), 4),
+        "last_reason": reason if not pattern_state else f"{reason}|{pattern_state.get('status')}",
         "sample_count": perf["count"],
         "winrate": round(perf["winrate"], 4),
         "avg_pnl": round(perf["avg_pnl"], 4),
         "max_drawdown": round(perf["max_drawdown"], 4),
+        "pattern": pattern_state,
     })
     _write_json(TUNER_FILE, state)
     return state
 
 
-def apply_tuner(config):
-    state = update_tuner_state()
+def apply_tuner(config, signal=None):
+    state = update_tuner_state(signal)
     tuned = dict(config)
     tuned["min_signal_score"] = max(50, min(90, float(config.get("min_signal_score", 60)) + state.get("min_signal_score_delta", 0)))
     tuned["min_sniper_quality"] = max(0.5, min(0.85, float(config.get("min_sniper_quality", 0.68)) + state.get("min_sniper_quality_delta", 0)))
