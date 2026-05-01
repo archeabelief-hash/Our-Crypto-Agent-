@@ -1,0 +1,18 @@
+<!doctype html><html><head><title>Live PnL Dashboard</title><style>body{background:#05070d;color:#fff;font-family:system-ui;padding:20px} .card{background:#111827;padding:16px;border-radius:12px;margin:10px 0}</style></head><body><h1>Live PnL Dashboard</h1><div class="card" id="pnl">PnL: loading...</div><div class="card" id="edge">Fill Edge: loading...</div><div class="card" id="bankroll">Bankroll: loading...</div><script>
+async function load(){
+ try{
+  const res = await fetch('/data/performance.json');
+  const data = await res.json();
+  let pnl=0, trades=data.trades||[];
+  trades.forEach(t=>pnl+=t.pnl||0);
+  document.getElementById('pnl').innerText='Total PnL: '+pnl.toFixed(2);
+  const edge = trades.length? trades.map(t=> (t.actual||0)-(t.expected||0)).reduce((a,b)=>a+b,0)/trades.length:0;
+  document.getElementById('edge').innerText='Avg Fill Edge: '+edge.toFixed(4);
+  let bankroll=100;
+  trades.forEach(t=>bankroll+=t.pnl||0);
+  document.getElementById('bankroll').innerText='Simulated Bankroll: '+bankroll.toFixed(2);
+ }catch(e){console.log(e)}
+}
+setInterval(load,2000);
+load();
+</script></body></html>
