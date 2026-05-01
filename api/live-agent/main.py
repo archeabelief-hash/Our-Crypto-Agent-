@@ -4,14 +4,17 @@ from agent.signal_reader import read_signal
 from agent.risk_engine import validate_trade
 from agent.execution_lifecycle import ExecutionLifecycle
 from agent.logger import log
+from agent.strategy_tuner import apply_tuner
 
-config = load_config()
-engine = ExecutionLifecycle(config)
+base_config = load_config()
+engine = ExecutionLifecycle(base_config)
 
-log("Agent started", config)
+log("Agent started", base_config)
 
 while True:
     try:
+        config = apply_tuner(base_config)
+
         signal = read_signal()
         if signal:
             decision = signal.get("decision")
@@ -22,9 +25,9 @@ while True:
 
                 if valid:
                     result = engine.process_signal(signal)
-                    log("ENTRY RESULT", result)
+                    log("ENTRY RESULT", {"result": result, "tuner": config.get("tuner_state")})
                 else:
-                    log("Trade blocked", reason)
+                    log("Trade blocked", {"reason": reason, "tuner": config.get("tuner_state")})
 
         exit_results = engine.manage_positions()
         for r in exit_results:
