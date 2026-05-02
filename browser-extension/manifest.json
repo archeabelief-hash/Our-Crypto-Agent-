@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Coinbase Magician Overlay",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Manual Coinbase overlay with AI Trade Engine signals, entry, target, stop, and copyable trade card.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
@@ -13,7 +13,6 @@
     {
       "matches": ["https://www.coinbase.com/*", "https://coinbase.com/*"],
       "js": ["content.js"],
-      "css": ["overlay.css"],
       "run_at": "document_idle"
     }
   ],
