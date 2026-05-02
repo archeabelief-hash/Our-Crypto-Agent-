@@ -8,6 +8,7 @@ from agent.strategy_tuner import apply_tuner
 from agent.multi_strategy import select_strategy
 from agent.execution_edge import analyze_execution_edge
 from agent.htf_bias import enforce_htf_bias
+from agent.advanced_risk import validate_advanced_risk
 
 base_config = load_config()
 engine = ExecutionLifecycle(base_config)
@@ -25,8 +26,12 @@ while True:
             strategy_info = select_strategy(signal)
             edge = analyze_execution_edge(signal)
             htf = enforce_htf_bias(signal)
+            risk_ok, risk_detail = validate_advanced_risk(signal, config)
 
-            if not htf["allowed"]:
+            if not risk_ok:
+                log("ADVANCED_RISK_BLOCK", risk_detail)
+
+            elif not htf["allowed"]:
                 log("HTF_BLOCK", htf)
 
             elif not edge["allowed"]:
@@ -50,6 +55,7 @@ while True:
                     result = engine.process_signal(signal)
                     log("ENTRY RESULT", {
                         "result": result,
+                        "risk": risk_detail,
                         "edge": edge,
                         "tuner": tuned_config.get("tuner_state"),
                         "strategy": strategy_info,
@@ -57,6 +63,7 @@ while True:
                 else:
                     log("Trade blocked", {
                         "reason": reason,
+                        "risk": risk_detail,
                         "edge": edge,
                         "tuner": tuned_config.get("tuner_state"),
                         "strategy": strategy_info,
