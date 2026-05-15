@@ -1,22 +1,30 @@
 {
   "manifest_version": 3,
-  "name": "Coinbase Magician Overlay",
-  "version": "1.0.1",
-  "description": "Manual Coinbase overlay with AI Trade Engine signals, entry, target, stop, and copyable trade card.",
+  "name": "Magician Exchange Overlay",
+  "version": "1.1.0",
+  "description": "Manual trading decision overlay for Coinbase Advanced Trade and Crypto.com Exchange using public market data only.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
     "https://www.coinbase.com/*",
     "https://coinbase.com/*",
-    "https://api.exchange.coinbase.com/*"
+    "https://api.exchange.coinbase.com/*",
+    "https://crypto.com/*",
+    "https://*.crypto.com/*",
+    "https://api.crypto.com/*"
   ],
   "content_scripts": [
     {
-      "matches": ["https://www.coinbase.com/*", "https://coinbase.com/*"],
+      "matches": [
+        "https://www.coinbase.com/*",
+        "https://coinbase.com/*",
+        "https://crypto.com/*",
+        "https://*.crypto.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],
   "action": {
-    "default_title": "Coinbase Magician Overlay"
+    "default_title": "Magician Exchange Overlay"
   }
 }
