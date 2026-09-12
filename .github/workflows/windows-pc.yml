@@ -1,0 +1,35 @@
+name: Build Twisted Psyche Crypto Windows App
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'pc-overlay/**'
+      - '.github/workflows/windows-pc.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: pc-overlay/package-lock.json
+      - name: Install dependencies
+        working-directory: pc-overlay
+        run: npm install
+      - name: Build Windows installer and portable EXE
+        working-directory: pc-overlay
+        run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Twisted-Psyche-Crypto-Windows
+          path: |
+            pc-overlay/dist/*.exe
+            pc-overlay/dist/*.blockmap
