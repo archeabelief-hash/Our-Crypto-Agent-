@@ -1,6 +1,6 @@
 {
   "name": "twisted-psyche-crypto-pc",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Twisted Psyche Crypto live market overlay for Windows",
   "main": "main.js",
   "scripts": {
