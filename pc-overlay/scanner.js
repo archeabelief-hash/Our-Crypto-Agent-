@@ -14,7 +14,7 @@
   const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
   const median=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2};
   const money=n=>Number.isFinite(n)?`${n>=0?'+':'-'}$${Math.abs(n).toFixed(2)}`:'—';
-  const px=n=>!Number.isFinite(n)?'—':n>=1000?n.toFixed(2):n>=1?n.toFixed(4):n.toFixed(7);
+  const px=n=>{if(!Number.isFinite(n)||n<=0)return'—';const a=Math.abs(n),d=clamp(7-Math.floor(Math.log10(a)),2,12);return n.toFixed(d)};
 
   async function jfetch(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()}
 
@@ -163,7 +163,7 @@
     const combined=[...rows].sort((a,b)=>Math.max(b.score50,b.score100)-Math.max(a.score50,a.score100)).slice(0,6);
     if($s('scanList'))$s('scanList').innerHTML=combined.map((x,i)=>{
       const up=x.direction>0.12,action=x.p50.net>0&&x.score50>=58?'WATCH / POSSIBLE BUY':'WAIT';
-      return `<div class="scanrow" data-pair="${x.id}"><b>${i+1}. ${x.id}</b> — ${action}<br><span class="small">Next move: ${up?'UP':'unclear/down'} • target ${px(x.target)} • score $50 ${x.score50}/100 / $100 ${x.score100}/100 • est. net $50 ${money(x.p50.net)} / $100 ${money(x.p100.net)}</span><br><button class="usepair" data-pair="${x.id}">USE ${x.id}</button></div>`;
+      return `<div class="scanrow" data-pair="${x.id}"><b>${i+1}. ${x.id}</b> — ${action}<br><span class="small">Price ${px(x.price)} → target ${px(x.target)} • Next move: ${up?'UP':'unclear/down'} • score $50 ${x.score50}/100 / $100 ${x.score100}/100 • est. net $50 ${money(x.p50.net)} / $100 ${money(x.p100.net)}</span><br><button class="usepair" data-pair="${x.id}">USE ${x.id}</button></div>`;
     }).join('');
     document.querySelectorAll('.usepair').forEach(btn=>btn.onclick=()=>usePair(btn.dataset.pair));
     if($s('scanTime'))$s('scanTime').textContent=`Last full scan: ${new Date().toLocaleTimeString()}`;
