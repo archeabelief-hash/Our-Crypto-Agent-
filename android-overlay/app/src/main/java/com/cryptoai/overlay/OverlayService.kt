@@ -1,65 +1,67 @@
 package com.cryptoai.overlay
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.Service
-import android.content.Intent
+import android.app.*
+import android.content.*
 import android.graphics.PixelFormat
 import android.os.IBinder
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.WindowManager
+import android.view.*
 import android.widget.TextView
+import java.util.Locale
+import kotlin.concurrent.thread
 import kotlin.math.abs
 
 class OverlayService : Service() {
     private lateinit var wm: WindowManager
     private lateinit var view: TextView
     private var engine: MarketEngine? = null
+    private var accountClient: CoinbaseAccountClient? = null
+    @Volatile private var running = false
+    @Volatile private var latestMarket: MarketEngine.Snapshot? = null
+    @Volatile private var latestPosition: CoinbaseAccountClient.Position? = null
+    @Volatile private var accountStatus = "Account: public-data mode"
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val product = intent?.getStringExtra("product") ?: "BTC-USD"
+        val keyName = intent?.getStringExtra("api_key_name").orEmpty()
+        val privateKey = intent?.getStringExtra("api_private_key").orEmpty()
+
         startForegroundNow(product)
         show(product)
+
+        if (keyName.isNotBlank() && privateKey.isNotBlank()) {
+            accountClient = CoinbaseAccountClient(keyName, privateKey)
+            startAccountSync(product)
+        }
         return START_NOT_STICKY
     }
 
     private fun startForegroundNow(product: String) {
         val channelId = "crypto_live"
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(
-                channelId,
-                "Crypto live analysis",
-                NotificationManager.IMPORTANCE_LOW
-            )
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(
+            NotificationChannel(channelId, "Crypto live analysis", NotificationManager.IMPORTANCE_LOW)
         )
-
         val notification = Notification.Builder(this, channelId)
             .setContentTitle("Crypto AI Overlay")
             .setContentText("Analyzing $product live")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
-
         startForeground(7, notification)
     }
 
     private fun show(product: String) {
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
-
         view = TextView(this).apply {
             text = "CONNECTING — $product"
-            textSize = 14f
+            textSize = 13f
             setTextColor(0xffffffff.toInt())
-            setBackgroundColor(0xdd101820.toInt())
-            setPadding(24, 18, 24, 18)
+            setBackgroundColor(0xee101820.toInt())
+            setPadding(22, 16, 22, 16)
         }
 
-        val params = WindowManager.LayoutParams(
+        val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -77,55 +79,123 @@ class OverlayService : Service() {
             var touchX = 0f
             var touchY = 0f
 
-            override fun onTouch(v: View, event: MotionEvent): Boolean {
+            override fun onTouch(v: View, event: android.view.MotionEvent): Boolean {
                 when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialX = params.x
-                        initialY = params.y
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        initialX = lp.x
+                        initialY = lp.y
                         touchX = event.rawX
                         touchY = event.rawY
                     }
-                    MotionEvent.ACTION_MOVE -> {
-                        params.x = initialX + (event.rawX - touchX).toInt()
-                        params.y = initialY + (event.rawY - touchY).toInt()
-                        wm.updateViewLayout(view, params)
+                    android.view.MotionEvent.ACTION_MOVE -> {
+                        lp.x = initialX + (event.rawX - touchX).toInt()
+                        lp.y = initialY + (event.rawY - touchY).toInt()
+                        wm.updateViewLayout(view, lp)
                     }
                 }
                 return true
             }
         })
-
-        wm.addView(view, params)
+        wm.addView(view, lp)
 
         engine = MarketEngine(product) { snapshot ->
-            view.post {
-                val side = if (snapshot.imbalance >= 0) "BUY" else "SELL"
-                val bookPct = abs(snapshot.imbalance * 100).toInt()
-                view.text = buildString {
-                    append("${snapshot.product}   ${snapshot.status}\n")
-                    append("${snapshot.signal}   ${snapshot.confidence}%\n")
-                    append("Bid ${fmt(snapshot.bid)}  Ask ${fmt(snapshot.ask)}\n")
-                    append("Book $side $bookPct%\n")
-                    append("Spoof-risk ${snapshot.spoofRisk}/100\n")
-                    append("Model target ${fmt(snapshot.target)}\n")
-                    append("Invalidation ${fmt(snapshot.invalidation)}\n\n")
-                    append("Advisory only • drag me")
-                }
-            }
+            latestMarket = snapshot
+            render()
         }.also { it.start() }
     }
 
-    private fun fmt(value: Double): String = when {
-        value == 0.0 -> "—"
-        value < 1 -> "%.6f".format(value)
-        else -> "%.2f".format(value)
+    private fun startAccountSync(product: String) {
+        running = true
+        thread(name = "coinbase-account-sync", isDaemon = true) {
+            while (running) {
+                try {
+                    accountStatus = "Account: syncing…"
+                    render()
+                    latestPosition = accountClient?.loadPosition(product)
+                    accountStatus = "Account: connected read-only"
+                } catch (e: Exception) {
+                    accountStatus = "Account error: ${e.message?.take(90) ?: "unknown"}"
+                }
+                render()
+                try {
+                    Thread.sleep(15_000)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }
+    }
+
+    private fun render() {
+        if (!::view.isInitialized) return
+        val market = latestMarket
+        val position = latestPosition
+
+        view.post {
+            val sb = StringBuilder()
+            if (market == null) {
+                sb.append("CONNECTING TO MARKET FEED…\n")
+            } else {
+                sb.append("${market.product}   ${market.status}\n")
+                sb.append("${market.signal}   ${market.confidence}%\n")
+                sb.append("Bid ${fmt(market.bid)}  Ask ${fmt(market.ask)}\n")
+                sb.append("Book ${if (market.imbalance >= 0) "BUY" else "SELL"} ${abs(market.imbalance * 100).toInt()}%\n")
+                sb.append("Spoof-risk ${market.spoofRisk}/100\n")
+                sb.append("Model target ${fmt(market.target)}\n")
+                sb.append("Invalidation ${fmt(market.invalidation)}\n")
+            }
+
+            sb.append("────────────\n")
+            sb.append(accountStatus).append('\n')
+
+            if (position != null) {
+                val mid = market?.let { (it.bid + it.ask) / 2.0 } ?: 0.0
+                val exitRate = position.takerFeeRate.coerceIn(0.0, 0.25)
+                val breakEven = if (position.balance > 0 && position.costBasis > 0) {
+                    position.costBasis / (position.balance * (1.0 - exitRate).coerceAtLeast(0.0001))
+                } else 0.0
+                val currentNet = if (mid > 0) mid * position.balance * (1.0 - exitRate) else 0.0
+                val pnl = if (position.costBasis > 0 && mid > 0) currentNet - position.costBasis else 0.0
+
+                sb.append("${position.token} held ${qty(position.balance)}\n")
+                sb.append("Avg entry ${fmt(position.avgEntry)}\n")
+                sb.append("Cost basis $${money(position.costBasis)}\n")
+                sb.append("Fees paid $${money(position.feesPaid)}\n")
+                if (breakEven > 0) sb.append("Est. break-even ${fmt(breakEven)}\n")
+                if (position.costBasis > 0 && mid > 0) {
+                    sb.append("Est. net P/L ${if (pnl >= 0) "+" else "-"}$${money(abs(pnl))}\n")
+                }
+                if (position.takerFeeRate > 0) {
+                    sb.append("Taker fee ${(position.takerFeeRate * 100).format2()}%\n")
+                }
+
+                if (position.recent.isNotEmpty()) {
+                    sb.append("Recent fills:\n")
+                    position.recent.take(4).forEach { fill ->
+                        val side = if (fill.side.equals("BUY", true)) "B" else "S"
+                        sb.append("$side ${qty(fill.size)} @ ${fmt(fill.price)}  fee $${money(fill.commission)}\n")
+                    }
+                }
+            }
+
+            sb.append("\nAdvisory only • drag me")
+            view.text = sb.toString()
+        }
+    }
+
+    private fun Double.format2(): String = String.format(Locale.US, "%.2f", this)
+    private fun money(v: Double): String = String.format(Locale.US, "%.2f", v)
+    private fun qty(v: Double): String = if (v < 1.0) String.format(Locale.US, "%.6f", v) else String.format(Locale.US, "%.4f", v)
+    private fun fmt(v: Double): String = when {
+        v == 0.0 -> "—"
+        v < 1 -> String.format(Locale.US, "%.6f", v)
+        else -> String.format(Locale.US, "%.2f", v)
     }
 
     override fun onDestroy() {
+        running = false
         engine?.stop()
-        if (::view.isInitialized) {
-            wm.removeView(view)
-        }
+        if (::view.isInitialized) wm.removeView(view)
         super.onDestroy()
     }
 }
