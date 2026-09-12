@@ -18,7 +18,7 @@ class OverlayService : Service() {
     @Volatile private var running = false
     @Volatile private var latestMarket: MarketEngine.Snapshot? = null
     @Volatile private var latestPosition: CoinbaseAccountClient.Position? = null
-    @Volatile private var accountStatus = "Account: public-data mode"
+    @Volatile private var accountStatus = "Your account: not connected"
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -26,10 +26,8 @@ class OverlayService : Service() {
         val product = intent?.getStringExtra("product") ?: "BTC-USD"
         val keyName = intent?.getStringExtra("api_key_name").orEmpty()
         val privateKey = intent?.getStringExtra("api_private_key").orEmpty()
-
         startForegroundNow(product)
         show(product)
-
         if (keyName.isNotBlank() && privateKey.isNotBlank()) {
             accountClient = CoinbaseAccountClient(keyName, privateKey)
             startAccountSync(product)
@@ -40,12 +38,10 @@ class OverlayService : Service() {
     private fun startForegroundNow(product: String) {
         val channelId = "crypto_live"
         val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(
-            NotificationChannel(channelId, "Crypto live analysis", NotificationManager.IMPORTANCE_LOW)
-        )
+        nm.createNotificationChannel(NotificationChannel(channelId, "Live market signals", NotificationManager.IMPORTANCE_LOW))
         val notification = Notification.Builder(this, channelId)
-            .setContentTitle("Crypto AI Overlay")
-            .setContentText("Analyzing $product live")
+            .setContentTitle("Twisted Psyche Crypto")
+            .setContentText("Watching $product live")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
         startForeground(7, notification)
@@ -67,26 +63,13 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 20
-            y = 180
-        }
+        ).apply { gravity = Gravity.TOP or Gravity.START; x = 20; y = 180 }
 
         view.setOnTouchListener(object : View.OnTouchListener {
-            var initialX = 0
-            var initialY = 0
-            var touchX = 0f
-            var touchY = 0f
-
+            var initialX = 0; var initialY = 0; var touchX = 0f; var touchY = 0f
             override fun onTouch(v: View, event: android.view.MotionEvent): Boolean {
                 when (event.action) {
-                    android.view.MotionEvent.ACTION_DOWN -> {
-                        initialX = lp.x
-                        initialY = lp.y
-                        touchX = event.rawX
-                        touchY = event.rawY
-                    }
+                    android.view.MotionEvent.ACTION_DOWN -> { initialX = lp.x; initialY = lp.y; touchX = event.rawX; touchY = event.rawY }
                     android.view.MotionEvent.ACTION_MOVE -> {
                         lp.x = initialX + (event.rawX - touchX).toInt()
                         lp.y = initialY + (event.rawY - touchY).toInt()
@@ -98,10 +81,7 @@ class OverlayService : Service() {
         })
         wm.addView(view, lp)
 
-        engine = MarketEngine(product) { snapshot ->
-            latestMarket = snapshot
-            render()
-        }.also { it.start() }
+        engine = MarketEngine(product) { snapshot -> latestMarket = snapshot; render() }.also { it.start() }
     }
 
     private fun startAccountSync(product: String) {
@@ -109,19 +89,14 @@ class OverlayService : Service() {
         thread(name = "coinbase-account-sync", isDaemon = true) {
             while (running) {
                 try {
-                    accountStatus = "Account: syncing…"
-                    render()
+                    accountStatus = "Your account: syncing…"; render()
                     latestPosition = accountClient?.loadPosition(product)
-                    accountStatus = "Account: connected read-only"
+                    accountStatus = "Your account: connected read-only"
                 } catch (e: Exception) {
-                    accountStatus = "Account error: ${e.message?.take(90) ?: "unknown"}"
+                    accountStatus = "Account connection error: ${e.message?.take(80) ?: "unknown"}"
                 }
                 render()
-                try {
-                    Thread.sleep(15_000)
-                } catch (_: InterruptedException) {
-                    break
-                }
+                try { Thread.sleep(15_000) } catch (_: InterruptedException) { break }
             }
         }
     }
@@ -130,19 +105,24 @@ class OverlayService : Service() {
         if (!::view.isInitialized) return
         val market = latestMarket
         val position = latestPosition
-
         view.post {
             val sb = StringBuilder()
             if (market == null) {
-                sb.append("CONNECTING TO MARKET FEED…\n")
+                sb.append("CONNECTING TO LIVE MARKETS…\n")
             } else {
+                val livePrice = (market.bid + market.ask) / 2.0
                 sb.append("${market.product}   ${market.status}\n")
-                sb.append("${market.signal}   ${market.confidence}%\n")
-                sb.append("Bid ${fmt(market.bid)}  Ask ${fmt(market.ask)}\n")
-                sb.append("Book ${if (market.imbalance >= 0) "BUY" else "SELL"} ${abs(market.imbalance * 100).toInt()}%\n")
-                sb.append("Spoof-risk ${market.spoofRisk}/100\n")
-                sb.append("Model target ${fmt(market.target)}\n")
-                sb.append("Invalidation ${fmt(market.invalidation)}\n")
+                sb.append("━━━━━━━━━━━━━━━━\n")
+                sb.append("▶ ${market.signal}\n")
+                sb.append("Confidence: ${market.confidence}%\n")
+                sb.append("Live price: ${fmt(livePrice)}\n")
+                sb.append("Buy around: ${fmt(market.buyLow)} – ${fmt(market.buyHigh)}\n")
+                sb.append("Take profit near: ${fmt(market.target)}\n")
+                sb.append("Get out below: ${fmt(market.invalidation)}\n")
+                sb.append("Why: ${market.reason}\n")
+                sb.append("Market feeds: ${market.sourcesLive}/${market.sourcesTotal} live\n")
+                sb.append("Book pressure: ${if (market.imbalance >= 0) "BUYERS" else "SELLERS"} ${abs(market.imbalance * 100).toInt()}%\n")
+                sb.append("Book risk: ${riskWord(market.spoofRisk)} (${market.spoofRisk}/100)\n")
             }
 
             sb.append("────────────\n")
@@ -151,46 +131,34 @@ class OverlayService : Service() {
             if (position != null) {
                 val mid = market?.let { (it.bid + it.ask) / 2.0 } ?: 0.0
                 val exitRate = position.takerFeeRate.coerceIn(0.0, 0.25)
-                val breakEven = if (position.balance > 0 && position.costBasis > 0) {
-                    position.costBasis / (position.balance * (1.0 - exitRate).coerceAtLeast(0.0001))
-                } else 0.0
+                val breakEven = if (position.balance > 0 && position.costBasis > 0) position.costBasis / (position.balance * (1.0 - exitRate).coerceAtLeast(0.0001)) else 0.0
                 val currentNet = if (mid > 0) mid * position.balance * (1.0 - exitRate) else 0.0
                 val pnl = if (position.costBasis > 0 && mid > 0) currentNet - position.costBasis else 0.0
 
-                sb.append("${position.token} held ${qty(position.balance)}\n")
-                sb.append("Avg entry ${fmt(position.avgEntry)}\n")
-                sb.append("Cost basis $${money(position.costBasis)}\n")
-                sb.append("Fees paid $${money(position.feesPaid)}\n")
-                if (breakEven > 0) sb.append("Est. break-even ${fmt(breakEven)}\n")
-                if (position.costBasis > 0 && mid > 0) {
-                    sb.append("Est. net P/L ${if (pnl >= 0) "+" else "-"}$${money(abs(pnl))}\n")
-                }
-                if (position.takerFeeRate > 0) {
-                    sb.append("Taker fee ${(position.takerFeeRate * 100).format2()}%\n")
-                }
-
+                sb.append("You own: ${qty(position.balance)} ${position.token}\n")
+                sb.append("Your average buy: ${fmt(position.avgEntry)}\n")
+                sb.append("Money put in: $${money(position.costBasis)}\n")
+                sb.append("Fees already paid: $${money(position.feesPaid)}\n")
+                if (breakEven > 0) sb.append("Break even after est. sell fee: ${fmt(breakEven)}\n")
+                if (position.costBasis > 0 && mid > 0) sb.append("If sold now (est.): ${if (pnl >= 0) "+" else "-"}$${money(abs(pnl))}\n")
                 if (position.recent.isNotEmpty()) {
-                    sb.append("Recent fills:\n")
+                    sb.append("Last trades:\n")
                     position.recent.take(4).forEach { fill ->
-                        val side = if (fill.side.equals("BUY", true)) "B" else "S"
+                        val side = if (fill.side.equals("BUY", true)) "Bought" else "Sold"
                         sb.append("$side ${qty(fill.size)} @ ${fmt(fill.price)}  fee $${money(fill.commission)}\n")
                     }
                 }
             }
 
-            sb.append("\nAdvisory only • drag me")
+            sb.append("\nSignal = live algorithm, not a guarantee • drag me")
             view.text = sb.toString()
         }
     }
 
-    private fun Double.format2(): String = String.format(Locale.US, "%.2f", this)
+    private fun riskWord(v: Int): String = when { v >= 70 -> "HIGH"; v >= 45 -> "MEDIUM"; else -> "LOW" }
     private fun money(v: Double): String = String.format(Locale.US, "%.2f", v)
     private fun qty(v: Double): String = if (v < 1.0) String.format(Locale.US, "%.6f", v) else String.format(Locale.US, "%.4f", v)
-    private fun fmt(v: Double): String = when {
-        v == 0.0 -> "—"
-        v < 1 -> String.format(Locale.US, "%.6f", v)
-        else -> String.format(Locale.US, "%.2f", v)
-    }
+    private fun fmt(v: Double): String = when { v == 0.0 -> "—"; v < 1 -> String.format(Locale.US, "%.6f", v); else -> String.format(Locale.US, "%.2f", v) }
 
     override fun onDestroy() {
         running = false
