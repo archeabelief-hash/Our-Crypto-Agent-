@@ -17,29 +17,36 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(36, 48, 36, 48)
+            setPadding(28, 36, 28, 36)
         }
 
         val title = TextView(this).apply {
             text = "Twisted Psyche Crypto"
-            textSize = 26f
+            textSize = 24f
             setTypeface(typeface, Typeface.BOLD)
         }
         val sub = TextView(this).apply {
-            text = "Live buy / wait / sell signals from public market feeds. Coinbase Level 2 is the main order book; Kraken, OKX and Binance are used as extra live confirmation when that token is listed there."
-            textSize = 15f
+            text = "Built for split-screen with Coinbase. Run the app in one pane and Coinbase in the other while the floating signal card stays live."
+            textSize = 14f
         }
         val pair = EditText(this).apply {
             hint = "Token pair, e.g. VVV-USD or BTC-USD"
             setText("VVV-USD")
             textSize = 18f
         }
-        val start = Button(this).apply { text = "START LIVE SIGNALS" }
+        val start = Button(this).apply { text = "START / REFRESH LIVE SIGNALS" }
+        val stop = Button(this).apply { text = "STOP SIGNALS + CLOSE OVERLAY" }
+        val exit = Button(this).apply { text = "EXIT APP" }
+
+        val splitHint = TextView(this).apply {
+            text = "Split-screen tip: start the signal, then use Android Recents → tap the app icon → Split screen. Put Coinbase in the other pane. The overlay can still float above both panes."
+            textSize = 13f
+        }
 
         val accountToggle = Button(this).apply { text = "OPTIONAL: CONNECT MY COINBASE READ-ONLY DATA" }
         val accountBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
         val accountNote = TextView(this).apply {
-            text = "You do NOT need keys for live public order books. These fields are only for your private Coinbase balance, fills, purchase prices and fees. Use a VIEW-ONLY Coinbase CDP key. Leave them blank for public-data mode."
+            text = "No keys are needed for public market feeds. These fields are only for private Coinbase balances, fills, entry prices and fees. Use VIEW-ONLY access."
             textSize = 14f
         }
         val keyName = EditText(this).apply {
@@ -57,7 +64,7 @@ class MainActivity : AppCompatActivity() {
         accountBox.addView(privateKey)
 
         val explanation = TextView(this).apply {
-            text = "What you will see:\nBUY NOW = the live algorithm currently sees a strong buy setup.\nGET READY TO BUY = conditions are improving but not strong enough yet.\nWAIT = no clean edge.\nGET READY TO SELL / SELL NOW = live pressure has turned against the trade.\n\nThe app also shows a buy zone, profit target, exit-below price, confidence and the reason for the signal."
+            text = "BUY NOW = strongest live buy condition.\nGET READY TO BUY = improving, wait for confirmation.\nWAIT = no clean edge.\nGET READY TO SELL / SELL NOW = pressure has turned against the trade.\n\nThe overlay shows live price, buy zone, take-profit area, exit-below price, confidence and reason."
             textSize = 14f
         }
 
@@ -65,6 +72,9 @@ class MainActivity : AppCompatActivity() {
         box.addView(sub)
         box.addView(pair)
         box.addView(start)
+        box.addView(stop)
+        box.addView(exit)
+        box.addView(splitHint)
         box.addView(accountToggle)
         box.addView(accountBox)
         box.addView(explanation)
@@ -88,6 +98,16 @@ class MainActivity : AppCompatActivity() {
                 startForegroundService(i)
                 privateKey.text.clear()
             }
+        }
+
+        stop.setOnClickListener {
+            stopService(Intent(this, OverlayService::class.java))
+            Toast.makeText(this, "Live signals stopped.", Toast.LENGTH_SHORT).show()
+        }
+
+        exit.setOnClickListener {
+            stopService(Intent(this, OverlayService::class.java))
+            finishAndRemoveTask()
         }
     }
 }
