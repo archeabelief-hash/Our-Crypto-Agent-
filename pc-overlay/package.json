@@ -1,6 +1,6 @@
 {
   "name": "twisted-psyche-crypto-pc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Twisted Psyche Crypto live market overlay for Windows",
   "main": "main.js",
   "scripts": {
@@ -14,7 +14,7 @@
   "build": {
     "appId": "com.twistedpsyche.crypto",
     "productName": "Twisted Psyche Crypto",
-    "files": ["main.js", "index.html", "renderer.js"],
+    "files": ["main.js", "index.html", "renderer.js", "shelf.js"],
     "win": {"target": ["nsis", "portable"]},
     "nsis": {"oneClick": true, "perMachine": false, "allowElevation": true},
     "artifactName": "Twisted-Psyche-Crypto-${version}-${arch}.${ext}"
