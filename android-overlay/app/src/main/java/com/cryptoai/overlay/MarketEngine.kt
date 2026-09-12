@@ -10,7 +10,7 @@ class MarketEngine(private val product:String, private val update:(Snapshot)->Un
  private val bids=sortedMapOf<Double,Double>(compareByDescending{it}); private val asks=sortedMapOf<Double,Double>()
  private val prior=mutableMapOf<String,Pair<Double,Long>>(); private var cancels=0; private var changes=0; private var buyFlow=0.0; private var sellFlow=0.0
  private val client=OkHttpClient.Builder().pingInterval(20,TimeUnit.SECONDS).build(); private var ws:WebSocket?=null
- fun start(){ val req=Request.Builder().url("wss://advanced-trade-ws.coinbase.com").build(); ws=client.newWebSocket(req,object:WebSocketListener(){
+ fun start(){ RemoteStrategy.current(); val req=Request.Builder().url("wss://advanced-trade-ws.coinbase.com").build(); ws=client.newWebSocket(req,object:WebSocketListener(){
   override fun onOpen(w:WebSocket,r:Response){ listOf("level2","market_trades","heartbeats").forEach{ ch->w.send(JSONObject().put("type","subscribe").put("product_ids",org.json.JSONArray().put(product)).put("channel",ch).toString()) } }
   override fun onMessage(w:WebSocket,text:String){ try{ parse(JSONObject(text)) }catch(_:Exception){} }
   override fun onFailure(w:WebSocket,t:Throwable,r:Response?){ update(Snapshot(product,0.0,0.0,0.0,0,"WAIT",0,0.0,0.0,"Feed reconnect required: ${t.message}")) }
@@ -22,11 +22,14 @@ class MarketEngine(private val product:String, private val update:(Snapshot)->Un
    if(channel=="market_trades"){ val ts=e.optJSONArray("trades")?:continue; for(k in 0 until ts.length()){ val t=ts.getJSONObject(k); val q=t.optDouble("size"); if(t.optString("side")=="BUY") sellFlow+=q else buyFlow+=q }; emit() }
   }
  }
- private fun emit(){ if(bids.isEmpty()||asks.isEmpty())return; val bid=bids.firstKey(); val ask=asks.firstKey(); val mid=(bid+ask)/2; val depthPct=.006
-  val bd=bids.filterKeys{it>=mid*(1-depthPct)}.values.sum(); val ad=asks.filterKeys{it<=mid*(1+depthPct)}.values.sum(); val imb=if(bd+ad==0.0)0.0 else (bd-ad)/(bd+ad)
+ private fun emit(){
+  if(bids.isEmpty()||asks.isEmpty())return
+  val cfg=RemoteStrategy.current()
+  val bid=bids.firstKey(); val ask=asks.firstKey(); val mid=(bid+ask)/2
+  val bd=bids.filterKeys{it>=mid*(1-cfg.depthPct)}.values.sum(); val ad=asks.filterKeys{it<=mid*(1+cfg.depthPct)}.values.sum(); val imb=if(bd+ad==0.0)0.0 else (bd-ad)/(bd+ad)
   val cancelRatio=if(changes==0)0.0 else cancels.toDouble()/changes; val maxBid=bids.entries.take(15).maxOfOrNull{it.value}?:0.0; val maxAsk=asks.entries.take(15).maxOfOrNull{it.value}?:0.0; val median=(bids.values.take(15)+asks.values.take(15)).sorted().let{if(it.isEmpty())1.0 else it[it.size/2].coerceAtLeast(1e-9)}
-  val wall=max(maxBid,maxAsk)/median; val spoof=(cancelRatio*55 + min(1.0,wall/12.0)*45).roundToInt().coerceIn(0,100); val flow=if(buyFlow+sellFlow==0.0)0.0 else (buyFlow-sellFlow)/(buyFlow+sellFlow)
-  val score=(imb*.55+flow*.45); val conf=(abs(score)*100).roundToInt().coerceIn(0,95); val signal=when{score>.28&&spoof<75->"LONG WATCH";score<-.28&&spoof<75->"EXIT / SHORT WATCH";else->"WAIT"}; val range=(ask-bid).coerceAtLeast(mid*.0015)
-  update(Snapshot(product,bid,ask,imb,spoof,signal,conf,if(score>=0)mid+range*4 else mid-range*4,if(score>=0)mid-range*3 else mid+range*3,"LIVE"))
+  val wall=max(maxBid,maxAsk)/median; val spoof=(cancelRatio*cfg.cancelWeight + min(1.0,wall/cfg.wallScale)*cfg.wallWeight).roundToInt().coerceIn(0,100); val flow=if(buyFlow+sellFlow==0.0)0.0 else (buyFlow-sellFlow)/(buyFlow+sellFlow)
+  val score=(imb*cfg.imbalanceWeight+flow*cfg.flowWeight); val conf=(abs(score)*100).roundToInt().coerceIn(0,cfg.confidenceCap); val signal=when{score>cfg.longThreshold&&spoof<cfg.maxSpoofRisk->"LONG WATCH";score<cfg.shortThreshold&&spoof<cfg.maxSpoofRisk->"EXIT / SHORT WATCH";else->"WAIT"}; val range=(ask-bid).coerceAtLeast(mid*cfg.rangeFloorPct)
+  update(Snapshot(product,bid,ask,imb,spoof,signal,conf,if(score>=0)mid+range*cfg.targetMultiple else mid-range*cfg.targetMultiple,if(score>=0)mid-range*cfg.invalidationMultiple else mid+range*cfg.invalidationMultiple,"LIVE cfg${cfg.version}"))
  }
 }
