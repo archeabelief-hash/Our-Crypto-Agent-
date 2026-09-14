@@ -20,11 +20,13 @@ function createWindow() {
   win.loadFile('index.html');
   win.webContents.once('did-finish-load', () => {
     win.webContents.executeJavaScript(`(() => {
-      if (document.querySelector('script[data-liquidity-hunt]')) return;
-      const s = document.createElement('script');
-      s.src = 'liquidity-hunt.js';
-      s.dataset.liquidityHunt = '1';
-      document.body.appendChild(s);
+      for (const [src, key] of [['liquidity-hunt.js','liquidityHunt'],['actor-ledger.js','actorLedger']]) {
+        if (document.querySelector('script[data-' + key + ']')) continue;
+        const s = document.createElement('script');
+        s.src = src;
+        s.dataset[key] = '1';
+        document.body.appendChild(s);
+      }
     })()`);
   });
   win.setAlwaysOnTop(true, 'floating');
