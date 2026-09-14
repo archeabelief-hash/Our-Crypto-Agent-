@@ -17,8 +17,10 @@ class OverlayService : Service() {
     private lateinit var view: TextView
     private var engine: MarketEngine? = null
     private var accountClient: CoinbaseAccountClient? = null
+    private lateinit var ledger: PredictionLedger
     @Volatile private var running = false
     @Volatile private var latestMarket: MarketEngine.Snapshot? = null
+    @Volatile private var latestLedger: PredictionLedger.Summary? = null
     @Volatile private var latestPosition: CoinbaseAccountClient.Position? = null
     @Volatile private var accountStatus = "Your account: not connected"
     @Volatile private var bankroll = 100.0
@@ -33,6 +35,7 @@ class OverlayService : Service() {
         bankroll = intent?.getDoubleExtra("bankroll", 100.0)?.coerceAtLeast(1.0) ?: 100.0
         val keyName = intent?.getStringExtra("api_key_name").orEmpty()
         val privateKey = intent?.getStringExtra("api_private_key").orEmpty()
+        ledger = PredictionLedger(this)
         startForegroundNow(product)
         show(product)
         if (keyName.isNotBlank() && privateKey.isNotBlank()) {
@@ -48,7 +51,7 @@ class OverlayService : Service() {
         nm.createNotificationChannel(NotificationChannel(channelId, "Live market forecast", NotificationManager.IMPORTANCE_LOW))
         val notification = Notification.Builder(this, channelId)
             .setContentTitle("Twisted Psyche Crypto")
-            .setContentText("Liquidity hunt live • $product • $${money(bankroll)} plan")
+            .setContentText("Liquidity + actor-state live • $product • $${money(bankroll)} plan")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
         startForeground(7, notification)
@@ -87,7 +90,12 @@ class OverlayService : Service() {
             }
         })
         wm.addView(view, lp)
-        engine = MarketEngine(product) { snapshot -> latestMarket = snapshot; render() }.also { it.start() }
+        engine = MarketEngine(product) { snapshot ->
+            latestMarket = snapshot
+            val mid = (snapshot.bid + snapshot.ask) / 2.0
+            latestLedger = ledger.update(snapshot.product, mid, snapshot.liquidity, snapshot.actor)
+            render()
+        }.also { it.start() }
     }
 
     private fun startAccountSync(product: String) {
@@ -138,6 +146,7 @@ class OverlayService : Service() {
             market.signal.startsWith("SELL NOW") -> "EXIT / ABORT"
             market.signal.contains("EARLY REVERSAL") && worthTaking -> "EARLY REVERSAL WINDOW — LIMIT ENTRY ACTIVE"
             market.signal.contains("SWEEP ZONE") -> "PREPARE SNIPER LIMIT"
+            market.signal.contains("ACTOR RELEASE") && worthTaking -> "ACTOR RELEASE — EARLY BUY WINDOW"
             market.signal.startsWith("BUY NOW") && worthTaking -> "BUY NOW"
             market.signal.startsWith("BUY NOW") -> "WAIT — TARGET DOES NOT COVER RISK/COSTS"
             market.signal.startsWith("GET READY TO BUY") -> "BUY SETUP FORMING"
@@ -164,6 +173,7 @@ class OverlayService : Service() {
         if (!::view.isInitialized) return
         val market = latestMarket
         val position = latestPosition
+        val stats = latestLedger
         view.post {
             val sb = StringBuilder()
             if (market == null) {
@@ -173,6 +183,7 @@ class OverlayService : Service() {
                 val tm = tradeMath(market)
                 val fc = forecast(market)
                 val h = market.liquidity
+                val a = market.actor
                 sb.append("${market.product}   ${market.status}\n")
                 sb.append("━━━━━━━━━━━━━━━━\n")
                 sb.append("LIQUIDITY HUNT / PRE-WICK ENTRY\n")
@@ -184,6 +195,22 @@ class OverlayService : Service() {
                 sb.append("Abort below: ${fmt(h.abortBelow)}\n")
                 sb.append("Bounce objective: ${fmt(h.bounceTarget)}\n")
                 sb.append("Why: ${h.reason}\n")
+                sb.append("────────────\n")
+                sb.append("ACTOR / AUTOMATION FINGERPRINT\n")
+                sb.append("State: ${a.state} (${a.confidence}% behavioral match)\n")
+                sb.append("Likely next: ${a.nextAction}\n")
+                sb.append("Refill ${a.refillRate}% • cancel ${a.cancelRate}% • layering ${a.layeringScore}%\n")
+                sb.append("Why: ${a.reason}\n")
+                sb.append("────────────\n")
+                sb.append("PREDICTION SCORECARD\n")
+                if (stats == null || stats.resolved == 0) {
+                    sb.append("Learning — no resolved predictions yet\n")
+                } else {
+                    sb.append("Sweep-zone hit rate: ${stats.zoneHitRate}%\n")
+                    sb.append("Sweep → bounce success: ${stats.bounceSuccessRate}%\n")
+                    sb.append("Resolved: ${stats.resolved} • pending: ${stats.pending}\n")
+                    sb.append("Latest: ${stats.latest}\n")
+                }
                 sb.append("────────────\n")
                 sb.append("WHAT WE EXPECT NEXT\n")
                 sb.append("▶ ${fc.first}\n")
@@ -218,7 +245,7 @@ class OverlayService : Service() {
                 if (breakEven > 0) sb.append("Break even after est. sell fee: ${fmt(breakEven)}\n")
                 if (position.costBasis > 0 && mid > 0) sb.append("If sold now (est.): ${signedMoney(pnl)}\n")
             }
-            sb.append("\nEstimated liquidity zones from public market data • not private stop data • drag me")
+            sb.append("\nBehavioral actor inference only — not identity • predictions saved locally • drag me")
             view.text = sb.toString()
         }
     }
