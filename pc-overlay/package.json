@@ -1,7 +1,7 @@
 {
   "name": "twisted-psyche-crypto-pc",
-  "version": "0.5.0",
-  "description": "Twisted Psyche Crypto live liquidity-hunt, actor-state, and prediction-accuracy overlay for Windows",
+  "version": "0.6.0",
+  "description": "Twisted Psyche Crypto calibrated liquidity-hunt, actor-state, breakdown-guard and prediction-accuracy overlay for Windows",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
