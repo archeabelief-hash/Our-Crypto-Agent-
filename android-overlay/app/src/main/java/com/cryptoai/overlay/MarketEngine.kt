@@ -29,7 +29,8 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         val spreadPct: Double,
         val sourcesLive: Int,
         val sourcesTotal: Int,
-        val reason: String
+        val reason: String,
+        val liquidity: LiquidityHuntModel.Result
     )
 
     private data class VenueState(
@@ -49,6 +50,7 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
     )
     private val bookEvents = ArrayDeque<Pair<Long, Boolean>>()
     private val tradeEvents = ArrayDeque<Triple<Long, Double, Boolean>>()
+    private val liquidityHunt = LiquidityHuntModel()
     private val client = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
     private val sockets = mutableListOf<WebSocket>()
     private var stopped = false
@@ -147,6 +149,7 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
                     if (price <= 0) continue
                     val book = if (side == "bid") bids else asks
                     val old = book[price] ?: 0.0
+                    liquidityHunt.onBookUpdate(side, old, qty, now)
                     val cancel = old > 0.0 && qty == 0.0
                     bookEvents.addLast(now to cancel)
                     if (qty == 0.0) book.remove(price) else book[price] = qty
@@ -161,9 +164,10 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
                     val t = trades.getJSONObject(k)
                     val size = t.optDouble("size")
                     if (size <= 0) continue
-                    // Coinbase's side field is maker side in this stream, so SELL maker means aggressive buyer.
+                    // Coinbase's side field is maker side: SELL maker means aggressive buyer.
                     val aggressiveBuy = t.optString("side").equals("SELL", true)
                     tradeEvents.addLast(Triple(now, size, aggressiveBuy))
+                    liquidityHunt.onTrade(size, aggressiveBuy, now)
                 }
                 trimWindows(now)
                 emit()
@@ -241,7 +245,7 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         val confidenceBoost = if (sourcesLive >= 3) 1.08 else if (sourcesLive == 1) 0.82 else 1.0
         val confidence = (abs(score) * 100.0 * confidenceBoost).roundToInt().coerceIn(0, cfg.confidenceCap)
 
-        val signal = when {
+        val baseSignal = when {
             spreadPct > cfg.maxSpreadPct -> "WAIT — SPREAD TOO WIDE"
             spoof >= cfg.maxSpoofRisk -> "WAIT — BOOK UNSTABLE"
             score >= cfg.buyNowThreshold && confidence >= 45 -> "BUY NOW"
@@ -254,27 +258,38 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         val support = depthBids.maxByOrNull { it.value }?.key ?: bid
         val resistance = depthAsks.maxByOrNull { it.value }?.key ?: ask
         val range = (ask - bid).coerceAtLeast(mid * cfg.rangeFloorPct)
-        val buyLow = max(support, mid - range * 2.0).coerceAtMost(ask)
-        val buyHigh = ask
+        val hunt = liquidityHunt.evaluate(
+            bid, ask, bids, asks, support, resistance,
+            coinbaseMomentum, crossVenueMomentum,
+            max(cfg.rangeFloorPct, spreadPct * 6.0)
+        )
+        val signal = when {
+            hunt.action.startsWith("ABORT") -> "SELL NOW — SWEEP FAILED"
+            hunt.action.startsWith("EARLY REVERSAL") && spoof < cfg.maxSpoofRisk -> "BUY NOW — EARLY REVERSAL"
+            hunt.action.startsWith("PREPARE SNIPER") -> "GET READY TO BUY — SWEEP ZONE"
+            else -> baseSignal
+        }
+        val buyLow = if (hunt.zoneLow > 0) hunt.zoneLow else max(support, mid - range * 2.0).coerceAtMost(ask)
+        val buyHigh = if (hunt.zoneHigh > 0) hunt.zoneHigh else ask
         val rawTarget = mid + range * cfg.targetMultiple
-        val target = if (resistance > ask * 1.0004 && resistance < rawTarget * 1.02) resistance else rawTarget
+        val target = max(hunt.bounceTarget, if (resistance > ask * 1.0004 && resistance < rawTarget * 1.02) resistance else rawTarget)
         val rawStop = mid - range * cfg.invalidationMultiple
-        val invalidation = min(rawStop, support - range * 0.75).coerceAtLeast(0.0)
+        val invalidation = if (hunt.abortBelow > 0) hunt.abortBelow else min(rawStop, support - range * 0.75).coerceAtLeast(0.0)
 
         val reasons = mutableListOf<String>()
+        reasons += hunt.reason
         if (imbalance > 0.15) reasons += "buyers heavier in book" else if (imbalance < -0.15) reasons += "sellers heavier in book"
         if (flow > 0.15) reasons += "buyers hitting market" else if (flow < -0.15) reasons += "selling pressure"
-        if (coinbaseMomentum > 0.15) reasons += "price rising" else if (coinbaseMomentum < -0.15) reasons += "price falling"
         if (sourcesLive >= 3 && crossVenueMomentum > 0.10) reasons += "other exchanges confirm up" else if (sourcesLive >= 3 && crossVenueMomentum < -0.10) reasons += "other exchanges confirm down"
         if (spoof >= 55) reasons += "order book cancellation risk elevated"
-        val reason = if (reasons.isEmpty()) "No strong edge yet" else reasons.take(3).joinToString(" • ")
+        val reason = reasons.take(3).joinToString(" • ")
 
         update(
             Snapshot(
                 product, bid, ask, imbalance, spoof, signal, confidence, target, invalidation,
-                statusOverride ?: "LIVE • $sourcesLive/${venues.size} feeds • cfg${cfg.version}",
+                statusOverride ?: "LIVE • $sourcesLive/${venues.size} feeds • LIQUIDITY HUNT",
                 buyLow, buyHigh, support, resistance, coinbaseMomentum, crossVenueMomentum,
-                spreadPct, sourcesLive, venues.size, reason
+                spreadPct, sourcesLive, venues.size, reason, hunt
             )
         )
     }
