@@ -48,7 +48,7 @@ class OverlayService : Service() {
         nm.createNotificationChannel(NotificationChannel(channelId, "Live market forecast", NotificationManager.IMPORTANCE_LOW))
         val notification = Notification.Builder(this, channelId)
             .setContentTitle("Twisted Psyche Crypto")
-            .setContentText("Forecasting $product live • $${money(bankroll)} plan")
+            .setContentText("Liquidity hunt live • $product • $${money(bankroll)} plan")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
         startForeground(7, notification)
@@ -87,7 +87,6 @@ class OverlayService : Service() {
             }
         })
         wm.addView(view, lp)
-
         engine = MarketEngine(product) { snapshot -> latestMarket = snapshot; render() }.also { it.start() }
     }
 
@@ -109,20 +108,18 @@ class OverlayService : Service() {
     }
 
     private data class TradeMath(
-        val entry: Double,
-        val tokens: Double,
-        val buyFee: Double,
-        val sellFee: Double,
-        val netProfit: Double,
-        val stopLoss: Double,
-        val rewardRisk: Double,
-        val breakEven: Double,
-        val worthTaking: Boolean,
-        val displaySignal: String
+        val entry: Double, val tokens: Double, val buyFee: Double, val sellFee: Double,
+        val netProfit: Double, val stopLoss: Double, val rewardRisk: Double,
+        val breakEven: Double, val worthTaking: Boolean, val displaySignal: String
     )
 
     private fun tradeMath(market: MarketEngine.Snapshot): TradeMath {
-        val entry = market.buyHigh.coerceAtLeast(market.ask).coerceAtLeast(0.000000000001)
+        val huntEntry = market.liquidity.sniperEntry.takeIf { it > 0.0 }
+        val entry = when {
+            market.signal.contains("EARLY REVERSAL") && huntEntry != null -> huntEntry
+            market.signal.contains("SWEEP ZONE") && huntEntry != null -> huntEntry
+            else -> market.ask
+        }.coerceAtLeast(0.000000000001)
         val feeRate = max(conservativeFeeRate, latestPosition?.takerFeeRate ?: 0.0)
         val preFeeNotional = bankroll / (1.0 + feeRate)
         val buyFee = bankroll - preFeeNotional
@@ -137,34 +134,28 @@ class OverlayService : Service() {
         val breakEven = if (tokens > 0) bankroll / (tokens * (1.0 - feeRate)) else 0.0
         val minimumUsefulProfit = max(0.10, bankroll * 0.0025)
         val worthTaking = netProfit >= minimumUsefulProfit && rewardRisk >= minRewardRisk && market.target > breakEven
-
         val displaySignal = when {
-            market.signal.startsWith("SELL NOW") -> "EXIT / AVOID BUYING"
-            market.signal.startsWith("GET READY TO SELL") -> "SELL PRESSURE BUILDING"
+            market.signal.startsWith("SELL NOW") -> "EXIT / ABORT"
+            market.signal.contains("EARLY REVERSAL") && worthTaking -> "EARLY REVERSAL WINDOW — LIMIT ENTRY ACTIVE"
+            market.signal.contains("SWEEP ZONE") -> "PREPARE SNIPER LIMIT"
             market.signal.startsWith("BUY NOW") && worthTaking -> "BUY NOW"
-            market.signal.startsWith("BUY NOW") && !worthTaking -> "WAIT — TARGET DOES NOT COVER RISK/COSTS"
-            market.signal.startsWith("GET READY TO BUY") && worthTaking -> "BUY SETUP FORMING"
-            market.signal.startsWith("GET READY TO BUY") && !worthTaking -> "WAIT — SETUP NOT WORTH IT YET"
-            market.signal.startsWith("WAIT") -> "WAIT — NO CLEAR TRADE"
-            else -> market.signal
+            market.signal.startsWith("BUY NOW") -> "WAIT — TARGET DOES NOT COVER RISK/COSTS"
+            market.signal.startsWith("GET READY TO BUY") -> "BUY SETUP FORMING"
+            else -> "WAIT — NO CLEAR TRADE"
         }
         return TradeMath(entry, tokens, buyFee, sellFee, netProfit, stopLoss, rewardRisk, breakEven, worthTaking, displaySignal)
     }
 
     private fun forecast(m: MarketEngine.Snapshot): Pair<String, String> {
         val score = (m.imbalance * .45 + m.momentum * .35 + m.crossVenueMomentum * .20).coerceIn(-1.0, 1.0)
-        val direction = when {
-            score > .16 -> "UPWARD MOVE MORE LIKELY"
-            score < -.16 -> "DOWNWARD MOVE MORE LIKELY"
-            else -> "SIDEWAYS / RANGE MORE LIKELY"
-        }
+        val direction = when { score > .16 -> "UPWARD MOVE MORE LIKELY"; score < -.16 -> "DOWNWARD MOVE MORE LIKELY"; else -> "SIDEWAYS / RANGE MORE LIKELY" }
         val mid = (m.bid + m.ask) / 2.0
         val bounce = min(m.resistance, mid + max(mid * .0015, (mid - m.support).coerceAtLeast(0.0) * .8))
         val pullback = max(m.support, mid - max(mid * .0015, (m.resistance - mid).coerceAtLeast(0.0) * .8))
         val path = when {
-            score < -.16 -> "Most likely: DOWN first → test floor ${fmt(m.support)}. If it holds, bounce may reach ${fmt(bounce)}."
+            score < -.16 -> "Most likely: DOWN first → test liquidity below. If selling exhausts, bounce may reach ${fmt(bounce)}."
             score > .16 -> "Most likely: UP first → test ceiling ${fmt(m.resistance)}. If rejected, pullback may reach ${fmt(pullback)}."
-            else -> "Most likely: chop between floor ${fmt(m.support)} and ceiling ${fmt(m.resistance)} until one side wins."
+            else -> "Most likely: chop between ${fmt(m.support)} and ${fmt(m.resistance)} until one side wins."
         }
         return direction to path
     }
@@ -181,31 +172,36 @@ class OverlayService : Service() {
                 val livePrice = (market.bid + market.ask) / 2.0
                 val tm = tradeMath(market)
                 val fc = forecast(market)
+                val h = market.liquidity
                 sb.append("${market.product}   ${market.status}\n")
                 sb.append("━━━━━━━━━━━━━━━━\n")
+                sb.append("LIQUIDITY HUNT / PRE-WICK ENTRY\n")
+                sb.append("▶ ${h.action}\n")
+                sb.append("Likely sweep zone: ${fmt(h.zoneLow)} – ${fmt(h.zoneHigh)}\n")
+                sb.append("Sniper limit: ${fmt(h.sniperEntry)}\n")
+                sb.append("Sweep probability: ${h.sweepProbability}%\n")
+                sb.append("Absorption/exhaustion: ${h.absorption}%\n")
+                sb.append("Abort below: ${fmt(h.abortBelow)}\n")
+                sb.append("Bounce objective: ${fmt(h.bounceTarget)}\n")
+                sb.append("Why: ${h.reason}\n")
+                sb.append("────────────\n")
                 sb.append("WHAT WE EXPECT NEXT\n")
                 sb.append("▶ ${fc.first}\n")
                 sb.append(fc.second).append('\n')
-                sb.append("Forecast strength: ${market.confidence}%\n")
                 sb.append("Current price: ${fmt(livePrice)}\n")
-                sb.append("Likely floor: ${fmt(market.support)}\n")
-                sb.append("Likely ceiling: ${fmt(market.resistance)}\n")
                 sb.append("Book risk: ${riskWord(market.spoofRisk)}\n")
-                sb.append("Other-market check: ${market.sourcesLive}/${market.sourcesTotal} live\n")
+                sb.append("Other markets: ${market.sourcesLive}/${market.sourcesTotal} live\n")
                 sb.append("────────────\n")
-                sb.append("MANUAL TRADE CHECK — $${money(bankroll)}\n")
+                sb.append("$${money(bankroll)} PAPER / MANUAL PLAN\n")
                 sb.append("${tm.displaySignal}\n")
-                sb.append("Good buy area: ${fmt(market.buyLow)} – ${fmt(market.buyHigh)}\n")
-                sb.append("Approx. tokens: ${qty(tm.tokens)} ${market.product.substringBefore('-')}\n")
-                sb.append("Est. buy fee: $${money(tm.buyFee)}\n")
-                sb.append("Break-even price: ${fmt(tm.breakEven)}\n")
-                sb.append("Possible sell area: ${fmt(market.target)}\n")
-                sb.append("Est. sell fee: $${money(tm.sellFee)}\n")
+                sb.append("Planned entry: ${fmt(tm.entry)}\n")
+                sb.append("Est. tokens: ${qty(tm.tokens)} ${market.product.substringBefore('-')}\n")
+                sb.append("Break-even: ${fmt(tm.breakEven)}\n")
+                sb.append("Target: ${fmt(market.target)}\n")
+                sb.append("Abort: ${fmt(market.invalidation)}\n")
                 sb.append("Est. profit after fees: ${signedMoney(tm.netProfit)}\n")
-                sb.append("Get out below: ${fmt(market.invalidation)}\n")
-                sb.append("Est. loss if stop hits: -$${money(tm.stopLoss)}\n")
-                sb.append("Profit potential vs loss: ${if (tm.rewardRisk >= 1.5) "GOOD" else if (tm.rewardRisk >= 1) "OK" else "BAD"} (${ratio(tm.rewardRisk)} to 1)\n")
-                sb.append("Why: ${market.reason}\n")
+                sb.append("Est. loss at abort: -$${money(tm.stopLoss)}\n")
+                sb.append("Reward/risk: ${ratio(tm.rewardRisk)} to 1\n")
                 sb.append("Fee assumption: ${(max(conservativeFeeRate, position?.takerFeeRate ?: 0.0) * 100).format2()}% each side\n")
             }
 
@@ -219,12 +215,10 @@ class OverlayService : Service() {
                 val pnl = if (position.costBasis > 0 && mid > 0) currentNet - position.costBasis else 0.0
                 sb.append("You own: ${qty(position.balance)} ${position.token}\n")
                 sb.append("Average buy: ${fmt(position.avgEntry)}\n")
-                sb.append("Money put in: $${money(position.costBasis)}\n")
-                sb.append("Fees already paid: $${money(position.feesPaid)}\n")
                 if (breakEven > 0) sb.append("Break even after est. sell fee: ${fmt(breakEven)}\n")
                 if (position.costBasis > 0 && mid > 0) sb.append("If sold now (est.): ${signedMoney(pnl)}\n")
             }
-            sb.append("\nPrediction estimate • not a guarantee • drag me")
+            sb.append("\nEstimated liquidity zones from public market data • not private stop data • drag me")
             view.text = sb.toString()
         }
     }
