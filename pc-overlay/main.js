@@ -18,6 +18,15 @@ function createWindow() {
     }
   });
   win.loadFile('index.html');
+  win.webContents.once('did-finish-load', () => {
+    win.webContents.executeJavaScript(`(() => {
+      if (document.querySelector('script[data-liquidity-hunt]')) return;
+      const s = document.createElement('script');
+      s.src = 'liquidity-hunt.js';
+      s.dataset.liquidityHunt = '1';
+      document.body.appendChild(s);
+    })()`);
+  });
   win.setAlwaysOnTop(true, 'floating');
 }
 
