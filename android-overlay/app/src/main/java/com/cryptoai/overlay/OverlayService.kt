@@ -51,7 +51,7 @@ class OverlayService : Service() {
         nm.createNotificationChannel(NotificationChannel(channelId, "Live market forecast", NotificationManager.IMPORTANCE_LOW))
         val notification = Notification.Builder(this, channelId)
             .setContentTitle("Twisted Psyche Crypto")
-            .setContentText("Liquidity + actor-state live • $product • $${money(bankroll)} plan")
+            .setContentText("Live forecast + frozen qualified trade calls • $product")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
         startForeground(7, notification)
@@ -66,7 +66,6 @@ class OverlayService : Service() {
             setBackgroundColor(0xee101820.toInt())
             setPadding(22, 16, 22, 16)
         }
-
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -74,17 +73,12 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply { gravity = Gravity.TOP or Gravity.START; x = 20; y = 180 }
-
         view.setOnTouchListener(object : View.OnTouchListener {
             var initialX = 0; var initialY = 0; var touchX = 0f; var touchY = 0f
             override fun onTouch(v: View, event: android.view.MotionEvent): Boolean {
                 when (event.action) {
                     android.view.MotionEvent.ACTION_DOWN -> { initialX = lp.x; initialY = lp.y; touchX = event.rawX; touchY = event.rawY }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        lp.x = initialX + (event.rawX - touchX).toInt()
-                        lp.y = initialY + (event.rawY - touchY).toInt()
-                        wm.updateViewLayout(view, lp)
-                    }
+                    android.view.MotionEvent.ACTION_MOVE -> { lp.x = initialX + (event.rawX - touchX).toInt(); lp.y = initialY + (event.rawY - touchY).toInt(); wm.updateViewLayout(view, lp) }
                 }
                 return true
             }
@@ -93,7 +87,14 @@ class OverlayService : Service() {
         engine = MarketEngine(product) { snapshot ->
             latestMarket = snapshot
             val mid = (snapshot.bid + snapshot.ask) / 2.0
-            latestLedger = ledger.update(snapshot.product, mid, snapshot.liquidity, snapshot.actor)
+            val tm = tradeMath(snapshot)
+            val qualified = tm.worthTaking && (
+                tm.displaySignal.startsWith("EARLY REVERSAL") ||
+                tm.displaySignal.startsWith("ACTOR RELEASE") ||
+                tm.displaySignal == "BUY NOW"
+            )
+            latestLedger = ledger.update(snapshot.product, mid, snapshot.liquidity, snapshot.actor,
+                qualified, tm.displaySignal, tm.netProfit, tm.rewardRisk, bankroll)
             render()
         }.also { it.start() }
     }
@@ -102,15 +103,9 @@ class OverlayService : Service() {
         running = true
         thread(name = "coinbase-account-sync", isDaemon = true) {
             while (running) {
-                try {
-                    accountStatus = "Your account: syncing…"; render()
-                    latestPosition = accountClient?.loadPosition(product)
-                    accountStatus = "Your account: connected read-only"
-                } catch (e: Exception) {
-                    accountStatus = "Account connection error: ${e.message?.take(80) ?: "unknown"}"
-                }
-                render()
-                try { Thread.sleep(15_000) } catch (_: InterruptedException) { break }
+                try { accountStatus = "Your account: syncing…"; render(); latestPosition = accountClient?.loadPosition(product); accountStatus = "Your account: connected read-only" }
+                catch (e: Exception) { accountStatus = "Account connection error: ${e.message?.take(80) ?: "unknown"}" }
+                render(); try { Thread.sleep(15_000) } catch (_: InterruptedException) { break }
             }
         }
     }
@@ -176,76 +171,49 @@ class OverlayService : Service() {
         val stats = latestLedger
         view.post {
             val sb = StringBuilder()
-            if (market == null) {
-                sb.append("CONNECTING TO LIVE MARKETS…\n")
-            } else {
+            if (market == null) sb.append("CONNECTING TO LIVE MARKETS…\n") else {
                 val livePrice = (market.bid + market.ask) / 2.0
-                val tm = tradeMath(market)
-                val fc = forecast(market)
-                val h = market.liquidity
-                val a = market.actor
+                val tm = tradeMath(market); val fc = forecast(market); val h = market.liquidity; val a = market.actor
                 sb.append("${market.product}   ${market.status}\n")
-                sb.append("━━━━━━━━━━━━━━━━\n")
-                sb.append("LIQUIDITY HUNT / PRE-WICK ENTRY\n")
+                sb.append("━━━━━━━━━━━━━━━━\nLIVE FORECAST — CHANGES IN REAL TIME\n")
                 sb.append("▶ ${h.action}\n")
-                sb.append("Likely sweep zone: ${fmt(h.zoneLow)} – ${fmt(h.zoneHigh)}\n")
-                sb.append("Sniper limit: ${fmt(h.sniperEntry)}\n")
-                sb.append("Sweep probability: ${h.sweepProbability}%\n")
-                sb.append("Absorption/exhaustion: ${h.absorption}%\n")
-                sb.append("Abort below: ${fmt(h.abortBelow)}\n")
-                sb.append("Bounce objective: ${fmt(h.bounceTarget)}\n")
+                sb.append("Current sweep zone: ${fmt(h.zoneLow)} – ${fmt(h.zoneHigh)}\n")
+                sb.append("Current sniper: ${fmt(h.sniperEntry)} • P ${h.sweepProbability}% • absorption ${h.absorption}%\n")
+                sb.append("Current abort: ${fmt(h.abortBelow)} • bounce: ${fmt(h.bounceTarget)}\n")
                 sb.append("Why: ${h.reason}\n")
-                sb.append("────────────\n")
-                sb.append("ACTOR / AUTOMATION FINGERPRINT\n")
-                sb.append("State: ${a.state} (${a.confidence}% behavioral match)\n")
-                sb.append("Likely next: ${a.nextAction}\n")
+                sb.append("────────────\nACTOR / AUTOMATION FINGERPRINT\n")
+                sb.append("State: ${a.state} (${a.confidence}% behavioral match)\nLikely next: ${a.nextAction}\n")
                 sb.append("Refill ${a.refillRate}% • cancel ${a.cancelRate}% • layering ${a.layeringScore}%\n")
-                sb.append("Why: ${a.reason}\n")
-                sb.append("────────────\n")
-                sb.append("PREDICTION SCORECARD\n")
-                if (stats == null || stats.resolved == 0) {
-                    sb.append("Learning — no resolved predictions yet\n")
-                } else {
-                    sb.append("Sweep-zone hit rate: ${stats.zoneHitRate}%\n")
-                    sb.append("Sweep → bounce success: ${stats.bounceSuccessRate}%\n")
-                    sb.append("Resolved: ${stats.resolved} • pending: ${stats.pending}\n")
-                    sb.append("Latest: ${stats.latest}\n")
+                sb.append("────────────\nFROZEN QUALIFIED TRADE CALLS\n")
+                if (stats == null || stats.totalCalls == 0) sb.append("No qualified trade call frozen yet. Moving live forecasts do NOT count as trades.\n") else {
+                    sb.append(stats.latestFrozen).append('\n')
+                    sb.append("Calls: ${stats.totalCalls} • resolved ${stats.resolved} • pending ${stats.pending}\n")
+                    if (stats.resolved > 0) {
+                        sb.append("Zone hit: ${stats.zoneHitRate}% • target success: ${stats.bounceSuccessRate}%\n")
+                        sb.append("Conservative success floor: ${stats.conservativeSuccessFloor}% • grade ${stats.evidenceGrade}\n")
+                        sb.append("Latest result: ${stats.latest}\n")
+                    }
                 }
-                sb.append("────────────\n")
-                sb.append("WHAT WE EXPECT NEXT\n")
-                sb.append("▶ ${fc.first}\n")
-                sb.append(fc.second).append('\n')
-                sb.append("Current price: ${fmt(livePrice)}\n")
-                sb.append("Book risk: ${riskWord(market.spoofRisk)}\n")
-                sb.append("Other markets: ${market.sourcesLive}/${market.sourcesTotal} live\n")
-                sb.append("────────────\n")
-                sb.append("$${money(bankroll)} PAPER / MANUAL PLAN\n")
-                sb.append("${tm.displaySignal}\n")
-                sb.append("Planned entry: ${fmt(tm.entry)}\n")
-                sb.append("Est. tokens: ${qty(tm.tokens)} ${market.product.substringBefore('-')}\n")
-                sb.append("Break-even: ${fmt(tm.breakEven)}\n")
-                sb.append("Target: ${fmt(market.target)}\n")
-                sb.append("Abort: ${fmt(market.invalidation)}\n")
-                sb.append("Est. profit after fees: ${signedMoney(tm.netProfit)}\n")
-                sb.append("Est. loss at abort: -$${money(tm.stopLoss)}\n")
-                sb.append("Reward/risk: ${ratio(tm.rewardRisk)} to 1\n")
-                sb.append("Fee assumption: ${(max(conservativeFeeRate, position?.takerFeeRate ?: 0.0) * 100).format2()}% each side\n")
+                sb.append("────────────\nWHAT WE EXPECT NEXT\n▶ ${fc.first}\n${fc.second}\n")
+                sb.append("Current price: ${fmt(livePrice)} • Book risk: ${riskWord(market.spoofRisk)} • Markets: ${market.sourcesLive}/${market.sourcesTotal}\n")
+                sb.append("────────────\n$${money(bankroll)} PAPER / MANUAL PLAN\n")
+                sb.append("${tm.displaySignal}\nPlanned entry: ${fmt(tm.entry)}\nEst. tokens: ${qty(tm.tokens)} ${market.product.substringBefore('-')}\n")
+                sb.append("Break-even: ${fmt(tm.breakEven)} • Target: ${fmt(market.target)} • Abort: ${fmt(market.invalidation)}\n")
+                sb.append("Est. profit after fees: ${signedMoney(tm.netProfit)} • Est. loss at abort: -$${money(tm.stopLoss)}\n")
+                sb.append("Reward/risk: ${ratio(tm.rewardRisk)} to 1 • Fee assumption: ${(max(conservativeFeeRate, position?.takerFeeRate ?: 0.0) * 100).format2()}% each side\n")
             }
-
-            sb.append("────────────\n")
-            sb.append(accountStatus).append('\n')
+            sb.append("────────────\n").append(accountStatus).append('\n')
             if (position != null) {
                 val mid = market?.let { (it.bid + it.ask) / 2.0 } ?: 0.0
                 val exitRate = max(conservativeFeeRate, position.takerFeeRate.coerceIn(0.0, 0.25))
                 val breakEven = if (position.balance > 0 && position.costBasis > 0) position.costBasis / (position.balance * (1.0 - exitRate).coerceAtLeast(0.0001)) else 0.0
                 val currentNet = if (mid > 0) mid * position.balance * (1.0 - exitRate) else 0.0
                 val pnl = if (position.costBasis > 0 && mid > 0) currentNet - position.costBasis else 0.0
-                sb.append("You own: ${qty(position.balance)} ${position.token}\n")
-                sb.append("Average buy: ${fmt(position.avgEntry)}\n")
+                sb.append("You own: ${qty(position.balance)} ${position.token}\nAverage buy: ${fmt(position.avgEntry)}\n")
                 if (breakEven > 0) sb.append("Break even after est. sell fee: ${fmt(breakEven)}\n")
                 if (position.costBasis > 0 && mid > 0) sb.append("If sold now (est.): ${signedMoney(pnl)}\n")
             }
-            sb.append("\nBehavioral actor inference only — not identity • predictions saved locally • drag me")
+            sb.append("\nLive forecast moves • qualified trade calls freeze permanently • drag me")
             view.text = sb.toString()
         }
     }
@@ -253,7 +221,7 @@ class OverlayService : Service() {
     private fun Double.format2(): String = String.format(Locale.US, "%.2f", this)
     private fun ratio(v: Double): String = if (v.isFinite()) String.format(Locale.US, "%.2f", v) else "0.00"
     private fun signedMoney(v: Double): String = if (v >= 0) "+$${money(v)}" else "-$${money(abs(v))}"
-    private fun riskWord(v: Int): String = when { v >= 70 -> "HIGH — big orders may move/disappear"; v >= 45 -> "MEDIUM"; else -> "LOW" }
+    private fun riskWord(v: Int): String = when { v >= 70 -> "HIGH"; v >= 45 -> "MEDIUM"; else -> "LOW" }
     private fun money(v: Double): String = String.format(Locale.US, "%.2f", v)
     private fun qty(v: Double): String = when { v >= 1000 -> String.format(Locale.US, "%.2f", v); v >= 1 -> String.format(Locale.US, "%.4f", v); else -> String.format(Locale.US, "%.8f", v) }
     private fun fmt(v: Double): String = when {
@@ -266,10 +234,5 @@ class OverlayService : Service() {
         else -> String.format(Locale.US, "%.12f", v)
     }
 
-    override fun onDestroy() {
-        running = false
-        engine?.stop()
-        if (::view.isInitialized) wm.removeView(view)
-        super.onDestroy()
-    }
+    override fun onDestroy() { running = false; engine?.stop(); if (::view.isInitialized) wm.removeView(view); super.onDestroy() }
 }
