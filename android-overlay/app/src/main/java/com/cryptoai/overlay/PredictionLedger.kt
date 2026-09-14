@@ -17,79 +17,79 @@ class PredictionLedger(context: Context) {
         val resolved: Int,
         val latest: String,
         val pending: Int,
-        val evidenceGrade: String
+        val evidenceGrade: String,
+        val totalCalls: Int,
+        val latestFrozen: String
     )
 
     private val prefs = context.getSharedPreferences("twisted_prediction_ledger", Context.MODE_PRIVATE)
-    private val key = "predictions_v3"
-    private val oldKey = "predictions_v2"
+    private val key = "trade_calls_v4"
 
-    @Synchronized fun update(product: String, mid: Double, hunt: LiquidityHuntModel.Result, actor: ActorStateModel.Result): Summary {
+    @Synchronized fun update(
+        product: String,
+        mid: Double,
+        hunt: LiquidityHuntModel.Result,
+        actor: ActorStateModel.Result,
+        qualified: Boolean,
+        callLabel: String,
+        estimatedProfit: Double,
+        rewardRisk: Double,
+        bankroll: Double
+    ): Summary {
         val now = System.currentTimeMillis()
         val rows = load()
         for (i in 0 until rows.length()) {
             val r = rows.optJSONObject(i) ?: continue
             if (r.optString("product") != product || r.optString("result") != "PENDING") continue
-            val lowSeen = min(r.optDouble("lowSeen", mid), mid)
-            val highSeen = max(r.optDouble("highSeen", mid), mid)
-            r.put("lowSeen", lowSeen).put("highSeen", highSeen)
+            r.put("lowSeen", min(r.optDouble("lowSeen", mid), mid))
+            r.put("highSeen", max(r.optDouble("highSeen", mid), mid))
             if (mid <= r.optDouble("zoneHigh") && !r.optBoolean("zoneTouched")) {
-                r.put("zoneTouched", true).put("zoneTouchedAt", now).put("postZoneLow", mid).put("postZoneHigh", mid)
+                r.put("zoneTouched", true).put("zoneTouchedAt", now)
             }
-            if (r.optBoolean("zoneTouched")) {
-                r.put("postZoneLow", min(r.optDouble("postZoneLow", mid), mid))
-                r.put("postZoneHigh", max(r.optDouble("postZoneHigh", mid), mid))
-            }
-            val abort = r.optDouble("abort")
-            val target = r.optDouble("target")
             when {
-                abort > 0 && mid <= abort -> r.put("result", "FAILED").put("resolvedAt", now).put("note", "Abort level hit before bounce objective")
-                r.optBoolean("zoneTouched") && target > 0 && mid >= target -> r.put("result", "HIT").put("resolvedAt", now).put("note", "Sweep zone touched, then bounce objective reached")
-                now - r.optLong("createdAt") > 20 * 60_000L -> r.put("result", "EXPIRED").put("resolvedAt", now).put("note", if (r.optBoolean("zoneTouched")) "Zone touched but bounce objective not reached in 20m" else "Sweep zone not reached in 20m")
+                r.optDouble("abort") > 0.0 && mid <= r.optDouble("abort") -> r.put("result", "FAILED").put("resolvedAt", now).put("note", "Abort hit before frozen target")
+                r.optBoolean("zoneTouched") && r.optDouble("target") > 0.0 && mid >= r.optDouble("target") -> r.put("result", "HIT").put("resolvedAt", now).put("note", "Frozen entry/sweep zone reached, then frozen target hit")
+                now - r.optLong("createdAt") > 20 * 60_000L -> r.put("result", "EXPIRED").put("resolvedAt", now).put("note", if (r.optBoolean("zoneTouched")) "Frozen entry zone touched; target not reached in 20m" else "Frozen entry zone never reached in 20m")
             }
-            if (r.optString("result") != "PENDING" && r.optDouble("entry") > 0.0) {
-                val entry = r.optDouble("entry")
-                val hi = if (r.has("postZoneHigh")) r.optDouble("postZoneHigh") else r.optDouble("highSeen")
-                val lo = if (r.has("postZoneLow")) r.optDouble("postZoneLow") else r.optDouble("lowSeen")
-                r.put("mfePct", (hi-entry)/entry)
-                r.put("maePct", (lo-entry)/entry)
-                if (r.has("zoneTouchedAt")) r.put("timeToZoneMs", r.optLong("zoneTouchedAt")-r.optLong("createdAt"))
-                r.put("timeToResolveMs", r.optLong("resolvedAt")-r.optLong("createdAt"))
+            val entry = r.optDouble("entry")
+            if (entry > 0.0) {
+                r.put("mfePct", (r.optDouble("highSeen", mid) - entry) / entry)
+                r.put("maePct", (r.optDouble("lowSeen", mid) - entry) / entry)
             }
         }
 
-        var active = false
-        for (i in 0 until rows.length()) {
-            val r = rows.optJSONObject(i) ?: continue
-            if (r.optString("product") == product && r.optString("result") == "PENDING") { active = true; break }
-        }
+        val active = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.any { it.optString("product") == product && it.optString("result") == "PENDING" }
         val lastCreated = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.filter { it.optString("product") == product }.maxOfOrNull { it.optLong("createdAt") } ?: 0L
-        if (!active && hunt.sweepProbability >= 68 && now - lastCreated > 30_000L) {
+        if (qualified && !active && now - lastCreated > 30_000L) {
             rows.put(JSONObject()
+                .put("id", "TC-$now")
+                .put("kind", "TRADE_CALL")
                 .put("createdAt", now).put("product", product).put("result", "PENDING")
+                .put("callLabel", callLabel).put("marketPrice", mid)
                 .put("zoneLow", hunt.zoneLow).put("zoneHigh", hunt.zoneHigh)
                 .put("entry", hunt.sniperEntry).put("abort", hunt.abortBelow).put("target", hunt.bounceTarget)
-                .put("sweepProbability", hunt.sweepProbability)
+                .put("sweepProbability", hunt.sweepProbability).put("absorption", hunt.absorption)
                 .put("actorState", actor.state).put("actorConfidence", actor.confidence)
+                .put("estimatedProfit", estimatedProfit).put("rewardRisk", rewardRisk).put("bankroll", bankroll)
                 .put("zoneTouched", false).put("lowSeen", mid).put("highSeen", mid))
         }
-        trim(rows)
-        save(rows)
+        trim(rows); save(rows)
         return summarize(rows, hunt.sweepProbability)
     }
 
     private fun summarize(rows: JSONArray, rawProbability: Int): Summary {
-        val resolvedRows = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.filter { it.optString("result") != "PENDING" }
+        val all = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }
+        val resolvedRows = all.filter { it.optString("result") != "PENDING" }
         val resolved = resolvedRows.size
-        val pending = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.count { it.optString("result") == "PENDING" }
+        val pending = all.count { it.optString("result") == "PENDING" }
         val zoneHits = resolvedRows.count { it.optBoolean("zoneTouched") }
         val wins = resolvedRows.count { it.optString("result") == "HIT" }
-        val zoneRate = if (resolved > 0) ((zoneHits*100.0)/resolved).roundToInt() else 0
-        val bounceRate = if (resolved > 0) ((wins*100.0)/resolved).roundToInt() else 0
-        val floor = (wilsonLower(wins, resolved)*100).roundToInt()
+        val zoneRate = if (resolved > 0) (zoneHits * 100.0 / resolved).roundToInt() else 0
+        val bounceRate = if (resolved > 0) (wins * 100.0 / resolved).roundToInt() else 0
+        val floor = (wilsonLower(wins, resolved) * 100).roundToInt()
         val brier = if (resolved > 0) resolvedRows.map {
-            val p=it.optDouble("sweepProbability",50.0)/100.0
-            val y=if(it.optBoolean("zoneTouched"))1.0 else 0.0
+            val p = it.optDouble("sweepProbability", 50.0) / 100.0
+            val y = if (it.optBoolean("zoneTouched")) 1.0 else 0.0
             (p-y).pow(2)
         }.average() else Double.NaN
         val lowBucket=(rawProbability/10)*10
@@ -101,8 +101,15 @@ class PredictionLedger(context: Context) {
         }
         val mfe=resolvedRows.filter{it.has("mfePct")}.map{it.optDouble("mfePct")}
         val mae=resolvedRows.filter{it.has("maePct")}.map{it.optDouble("maePct")}
-        var latestTime=0L; var latest="No resolved calls yet"
-        resolvedRows.forEach { r -> val t=r.optLong("resolvedAt"); if(t>latestTime){latestTime=t;latest="${r.optString("result")} • ${r.optString("product")} • ${r.optString("note")}"} }
+        val latestResolved = resolvedRows.maxByOrNull { it.optLong("resolvedAt") }
+        val latest = latestResolved?.let { "${it.optString("result")} • ${it.optString("product")} • ${it.optString("note")}" } ?: "No resolved trade calls yet"
+        val newest = all.maxByOrNull { it.optLong("createdAt") }
+        val latestFrozen = newest?.let {
+            "${it.optString("id")} • ${it.optString("callLabel")} • ${it.optString("result")}\n" +
+            "Issued @ ${fmt(it.optDouble("marketPrice"))} • zone ${fmt(it.optDouble("zoneLow"))}-${fmt(it.optDouble("zoneHigh"))}\n" +
+            "entry ${fmt(it.optDouble("entry"))} • abort ${fmt(it.optDouble("abort"))} • target ${fmt(it.optDouble("target"))}\n" +
+            "P ${it.optInt("sweepProbability")}% • absorption ${it.optInt("absorption")}% • actor ${it.optString("actorState")} ${it.optInt("actorConfidence")}%"
+        } ?: "No qualified trade call frozen yet"
         val grade=when {
             resolved<30 -> "LEARNING"
             resolved<100 -> "EARLY EVIDENCE"
@@ -111,7 +118,7 @@ class PredictionLedger(context: Context) {
         }
         return Summary(zoneRate,bounceRate,floor,calibrated,brier,
             if(mfe.isEmpty())Double.NaN else mfe.average(), if(mae.isEmpty())Double.NaN else mae.average(),
-            resolved,latest,pending,grade)
+            resolved,latest,pending,grade,all.size,latestFrozen)
     }
 
     private fun wilsonLower(wins:Int,n:Int,z:Double=1.645):Double {
@@ -119,11 +126,8 @@ class PredictionLedger(context: Context) {
         val p=wins.toDouble()/n; val z2=z*z; val d=1+z2/n
         return ((p+z2/(2*n)-z*sqrt((p*(1-p)+z2/(4*n))/n))/d).coerceIn(0.0,1.0)
     }
-
-    private fun load(): JSONArray = try {
-        val raw=prefs.getString(key,null) ?: prefs.getString(oldKey,"[]") ?: "[]"
-        JSONArray(raw)
-    } catch (_:Exception) { JSONArray() }
+    private fun fmt(v:Double):String = when { v<=0||!v.isFinite()->"—"; v>=1->"%.4f".format(v); v>=.01->"%.6f".format(v); else->"%.8f".format(v) }
+    private fun load(): JSONArray = try { JSONArray(prefs.getString(key,"[]") ?: "[]") } catch (_:Exception) { JSONArray() }
     private fun save(rows: JSONArray) { prefs.edit().putString(key, rows.toString()).apply() }
     private fun trim(rows: JSONArray) {
         if(rows.length()<=500)return
