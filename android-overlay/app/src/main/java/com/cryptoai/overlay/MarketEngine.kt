@@ -30,7 +30,8 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         val sourcesLive: Int,
         val sourcesTotal: Int,
         val reason: String,
-        val liquidity: LiquidityHuntModel.Result
+        val liquidity: LiquidityHuntModel.Result,
+        val actor: ActorStateModel.Result
     )
 
     private data class VenueState(
@@ -51,6 +52,7 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
     private val bookEvents = ArrayDeque<Pair<Long, Boolean>>()
     private val tradeEvents = ArrayDeque<Triple<Long, Double, Boolean>>()
     private val liquidityHunt = LiquidityHuntModel()
+    private val actorState = ActorStateModel()
     private val client = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
     private val sockets = mutableListOf<WebSocket>()
     private var stopped = false
@@ -150,6 +152,7 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
                     val book = if (side == "bid") bids else asks
                     val old = book[price] ?: 0.0
                     liquidityHunt.onBookUpdate(side, old, qty, now)
+                    actorState.onBookUpdate(side, price, old, qty, now)
                     val cancel = old > 0.0 && qty == 0.0
                     bookEvents.addLast(now to cancel)
                     if (qty == 0.0) book.remove(price) else book[price] = qty
@@ -164,10 +167,10 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
                     val t = trades.getJSONObject(k)
                     val size = t.optDouble("size")
                     if (size <= 0) continue
-                    // Coinbase's side field is maker side: SELL maker means aggressive buyer.
                     val aggressiveBuy = t.optString("side").equals("SELL", true)
                     tradeEvents.addLast(Triple(now, size, aggressiveBuy))
                     liquidityHunt.onTrade(size, aggressiveBuy, now)
+                    actorState.onTrade(size, aggressiveBuy, now)
                 }
                 trimWindows(now)
                 emit()
@@ -233,11 +236,7 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         val crossVenueMomentum = if (liveOthers.isEmpty()) 0.0 else liveOthers.values.map { momentumFor(it, cfg.momentumWindowSeconds) }.average().coerceIn(-1.0, 1.0)
         val sourcesLive = venues.count { (_, v) -> now - v.lastMs < 15_000 && v.bid > 0 && v.ask > 0 }
 
-        var score = imbalance * cfg.imbalanceWeight +
-            flow * cfg.flowWeight +
-            coinbaseMomentum * cfg.momentumWeight +
-            crossVenueMomentum * cfg.venueWeight +
-            microPressure * cfg.microPriceWeight
+        var score = imbalance * cfg.imbalanceWeight + flow * cfg.flowWeight + coinbaseMomentum * cfg.momentumWeight + crossVenueMomentum * cfg.venueWeight + microPressure * cfg.microPriceWeight
         score = score.coerceIn(-1.0, 1.0)
         if (spreadPct > cfg.maxSpreadPct) score *= 0.45
         if (spoof >= cfg.maxSpoofRisk) score *= 0.55
@@ -258,15 +257,13 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         val support = depthBids.maxByOrNull { it.value }?.key ?: bid
         val resistance = depthAsks.maxByOrNull { it.value }?.key ?: ask
         val range = (ask - bid).coerceAtLeast(mid * cfg.rangeFloorPct)
-        val hunt = liquidityHunt.evaluate(
-            bid, ask, bids, asks, support, resistance,
-            coinbaseMomentum, crossVenueMomentum,
-            max(cfg.rangeFloorPct, spreadPct * 6.0)
-        )
+        val hunt = liquidityHunt.evaluate(bid, ask, bids, asks, support, resistance, coinbaseMomentum, crossVenueMomentum, max(cfg.rangeFloorPct, spreadPct * 6.0))
+        val actor = actorState.evaluate(mid, bids, asks)
         val signal = when {
             hunt.action.startsWith("ABORT") -> "SELL NOW — SWEEP FAILED"
             hunt.action.startsWith("EARLY REVERSAL") && spoof < cfg.maxSpoofRisk -> "BUY NOW — EARLY REVERSAL"
             hunt.action.startsWith("PREPARE SNIPER") -> "GET READY TO BUY — SWEEP ZONE"
+            actor.state == "RELEASING" && actor.confidence >= 70 && score > 0 -> "BUY NOW — ACTOR RELEASE"
             else -> baseSignal
         }
         val buyLow = if (hunt.zoneLow > 0) hunt.zoneLow else max(support, mid - range * 2.0).coerceAtMost(ask)
@@ -278,20 +275,17 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
 
         val reasons = mutableListOf<String>()
         reasons += hunt.reason
+        reasons += "actor ${actor.state.lowercase(Locale.US)} ${actor.confidence}%"
         if (imbalance > 0.15) reasons += "buyers heavier in book" else if (imbalance < -0.15) reasons += "sellers heavier in book"
         if (flow > 0.15) reasons += "buyers hitting market" else if (flow < -0.15) reasons += "selling pressure"
         if (sourcesLive >= 3 && crossVenueMomentum > 0.10) reasons += "other exchanges confirm up" else if (sourcesLive >= 3 && crossVenueMomentum < -0.10) reasons += "other exchanges confirm down"
         if (spoof >= 55) reasons += "order book cancellation risk elevated"
-        val reason = reasons.take(3).joinToString(" • ")
+        val reason = reasons.take(4).joinToString(" • ")
 
-        update(
-            Snapshot(
-                product, bid, ask, imbalance, spoof, signal, confidence, target, invalidation,
-                statusOverride ?: "LIVE • $sourcesLive/${venues.size} feeds • LIQUIDITY HUNT",
-                buyLow, buyHigh, support, resistance, coinbaseMomentum, crossVenueMomentum,
-                spreadPct, sourcesLive, venues.size, reason, hunt
-            )
-        )
+        update(Snapshot(product, bid, ask, imbalance, spoof, signal, confidence, target, invalidation,
+            statusOverride ?: "LIVE • $sourcesLive/${venues.size} feeds • LIQUIDITY + ACTOR STATE",
+            buyLow, buyHigh, support, resistance, coinbaseMomentum, crossVenueMomentum,
+            spreadPct, sourcesLive, venues.size, reason, hunt, actor))
     }
 
     private fun momentumFor(v: VenueState, seconds: Long): Double {
