@@ -64,7 +64,7 @@ class EthPerpTimingModel {
         if (mid <= 0.0) {
             return Result(
                 "WAIT — NO ETH PRICE", 0, "BTC waiting", btcPrice, btcMove15, btcMove60,
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 emptyList(), emptyList(), "Waiting for live ETH data."
             )
         }
