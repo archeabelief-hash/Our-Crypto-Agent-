@@ -86,15 +86,19 @@ class OverlayService : Service() {
         wm.addView(view, lp)
         engine = MarketEngine(product) { snapshot ->
             latestMarket = snapshot
-            val mid = (snapshot.bid + snapshot.ask) / 2.0
-            val tm = tradeMath(snapshot)
-            val qualified = tm.worthTaking && (
-                tm.displaySignal.startsWith("EARLY REVERSAL") ||
-                tm.displaySignal.startsWith("ACTOR RELEASE") ||
-                tm.displaySignal == "BUY NOW"
-            )
-            latestLedger = ledger.update(snapshot.product, mid, snapshot.liquidity, snapshot.actor,
-                qualified, tm.displaySignal, tm.netProfit, tm.rewardRisk, bankroll)
+            if (snapshot.ethPerp == null) {
+                val mid = (snapshot.bid + snapshot.ask) / 2.0
+                val tm = tradeMath(snapshot)
+                val qualified = tm.worthTaking && (
+                    tm.displaySignal.startsWith("EARLY REVERSAL") ||
+                    tm.displaySignal.startsWith("ACTOR RELEASE") ||
+                    tm.displaySignal == "BUY NOW"
+                )
+                latestLedger = ledger.update(snapshot.product, mid, snapshot.liquidity, snapshot.actor,
+                    qualified, tm.displaySignal, tm.netProfit, tm.rewardRisk, bankroll)
+            } else {
+                latestLedger = null
+            }
             render()
         }.also { it.start() }
     }
@@ -173,8 +177,34 @@ class OverlayService : Service() {
             val sb = StringBuilder()
             if (market == null) sb.append("CONNECTING TO LIVE MARKETS…\n") else {
                 val livePrice = (market.bid + market.ask) / 2.0
-                val tm = tradeMath(market); val fc = forecast(market); val h = market.liquidity; val a = market.actor
+                val tm = tradeMath(market); val fc = forecast(market); val h = market.liquidity; val a = market.actor; val p = market.ethPerp
                 sb.append("${market.product}   ${market.status}\n")
+                if (p != null) {
+                    sb.append("━━━━━━━━━━━━━━━━\nETH PERP TIMING — BTC LEADER WATCH ON\n")
+                    sb.append("▶ ${p.signal}\n")
+                    sb.append("Timing confidence: ${p.confidence}%\n")
+                    sb.append("${p.btcRead}\n")
+                    sb.append("BTC: ${fmt(p.btcPrice)} • 15s ${pctSigned(p.btcMove15)} • 60s ${pctSigned(p.btcMove60)}\n")
+                    sb.append("ETH pressure: ${(p.score * 100).toInt()} • turn speed: ${(p.scoreChange * 100).toInt()}\n")
+                    sb.append("────────────\nLONG PLAN\n")
+                    sb.append("Enter/trigger: ${fmt(p.longEntryLow)} – ${fmt(p.longEntryHigh)}\n")
+                    sb.append("Target / next ceiling: ${fmt(p.longTarget)}\n")
+                    sb.append("Invalid below: ${fmt(p.longStop)}\n")
+                    sb.append("────────────\nSHORT PLAN\n")
+                    sb.append("Enter/trigger: ${fmt(p.shortEntryLow)} – ${fmt(p.shortEntryHigh)}\n")
+                    sb.append("Target / next floor: ${fmt(p.shortTarget)}\n")
+                    sb.append("Invalid above: ${fmt(p.shortStop)}\n")
+                    sb.append("────────────\nETH SUPPORT SHELVES (below price)\n")
+                    if (p.supports.isEmpty()) sb.append("No strong shelf detected yet.\n") else p.supports.takeLast(6).reversed().forEachIndexed { i, s ->
+                        sb.append("${i + 1}. ${fmt(s.price)} • ${shelfWord(s.strength)} ${String.format(Locale.US, "%.1f", s.strength)}x\n")
+                    }
+                    sb.append("ETH RESISTANCE SHELVES (above price)\n")
+                    if (p.resistances.isEmpty()) sb.append("No strong shelf detected yet.\n") else p.resistances.take(6).forEachIndexed { i, s ->
+                        sb.append("${i + 1}. ${fmt(s.price)} • ${shelfWord(s.strength)} ${String.format(Locale.US, "%.1f", s.strength)}x\n")
+                    }
+                    sb.append("Why: ${p.reason}\n")
+                    sb.append("Use LONG/SHORT NOW only as a timing signal; leverage, liquidation and perp fees depend on your venue.\n")
+                }
                 sb.append("━━━━━━━━━━━━━━━━\nLIVE FORECAST — CHANGES IN REAL TIME\n")
                 sb.append("▶ ${h.action}\n")
                 sb.append("Current sweep zone: ${fmt(h.zoneLow)} – ${fmt(h.zoneHigh)}\n")
@@ -184,23 +214,30 @@ class OverlayService : Service() {
                 sb.append("────────────\nACTOR / AUTOMATION FINGERPRINT\n")
                 sb.append("State: ${a.state} (${a.confidence}% behavioral match)\nLikely next: ${a.nextAction}\n")
                 sb.append("Refill ${a.refillRate}% • cancel ${a.cancelRate}% • layering ${a.layeringScore}%\n")
-                sb.append("────────────\nFROZEN QUALIFIED TRADE CALLS\n")
-                if (stats == null || stats.totalCalls == 0) sb.append("No qualified trade call frozen yet. Moving live forecasts do NOT count as trades.\n") else {
-                    sb.append(stats.latestFrozen).append('\n')
-                    sb.append("Calls: ${stats.totalCalls} • resolved ${stats.resolved} • pending ${stats.pending}\n")
-                    if (stats.resolved > 0) {
-                        sb.append("Zone hit: ${stats.zoneHitRate}% • target success: ${stats.bounceSuccessRate}%\n")
-                        sb.append("Conservative success floor: ${stats.conservativeSuccessFloor}% • grade ${stats.evidenceGrade}\n")
-                        sb.append("Latest result: ${stats.latest}\n")
+                if (p == null) {
+                    sb.append("────────────\nFROZEN QUALIFIED TRADE CALLS\n")
+                    if (stats == null || stats.totalCalls == 0) sb.append("No qualified trade call frozen yet. Moving live forecasts do NOT count as trades.\n") else {
+                        sb.append(stats.latestFrozen).append('\n')
+                        sb.append("Calls: ${stats.totalCalls} • resolved ${stats.resolved} • pending ${stats.pending}\n")
+                        if (stats.resolved > 0) {
+                            sb.append("Zone hit: ${stats.zoneHitRate}% • target success: ${stats.bounceSuccessRate}%\n")
+                            sb.append("Conservative success floor: ${stats.conservativeSuccessFloor}% • grade ${stats.evidenceGrade}\n")
+                            sb.append("Latest result: ${stats.latest}\n")
+                        }
                     }
                 }
                 sb.append("────────────\nWHAT WE EXPECT NEXT\n▶ ${fc.first}\n${fc.second}\n")
                 sb.append("Current price: ${fmt(livePrice)} • Book risk: ${riskWord(market.spoofRisk)} • Markets: ${market.sourcesLive}/${market.sourcesTotal}\n")
-                sb.append("────────────\n$${money(bankroll)} PAPER / MANUAL PLAN\n")
-                sb.append("${tm.displaySignal}\nPlanned entry: ${fmt(tm.entry)}\nEst. tokens: ${qty(tm.tokens)} ${market.product.substringBefore('-')}\n")
-                sb.append("Break-even: ${fmt(tm.breakEven)} • Target: ${fmt(market.target)} • Abort: ${fmt(market.invalidation)}\n")
-                sb.append("Est. profit after fees: ${signedMoney(tm.netProfit)} • Est. loss at abort: -$${money(tm.stopLoss)}\n")
-                sb.append("Reward/risk: ${ratio(tm.rewardRisk)} to 1 • Fee assumption: ${(max(conservativeFeeRate, position?.takerFeeRate ?: 0.0) * 100).format2()}% each side\n")
+                if (p == null) {
+                    sb.append("────────────\n${money(bankroll)} PAPER / MANUAL PLAN\n")
+                    sb.append("${tm.displaySignal}\nPlanned entry: ${fmt(tm.entry)}\nEst. tokens: ${qty(tm.tokens)} ${market.product.substringBefore('-')}\n")
+                    sb.append("Break-even: ${fmt(tm.breakEven)} • Target: ${fmt(market.target)} • Abort: ${fmt(market.invalidation)}\n")
+                    sb.append("Est. profit after fees: ${signedMoney(tm.netProfit)} • Est. loss at abort: -${money(tm.stopLoss)}\n")
+                    sb.append("Reward/risk: ${ratio(tm.rewardRisk)} to 1 • Fee assumption: ${(max(conservativeFeeRate, position?.takerFeeRate ?: 0.0) * 100).format2()}% each side\n")
+                } else {
+                    sb.append("────────────\nPERP MODE NOTE\n")
+                    sb.append("Dollar P/L is hidden here until your actual perp venue fee + leverage are configured. Direction, shelves, triggers and invalidation are still live.\n")
+                }
             }
             sb.append("────────────\n").append(accountStatus).append('\n')
             if (position != null) {
@@ -222,6 +259,8 @@ class OverlayService : Service() {
     private fun ratio(v: Double): String = if (v.isFinite()) String.format(Locale.US, "%.2f", v) else "0.00"
     private fun signedMoney(v: Double): String = if (v >= 0) "+$${money(v)}" else "-$${money(abs(v))}"
     private fun riskWord(v: Int): String = when { v >= 70 -> "HIGH"; v >= 45 -> "MEDIUM"; else -> "LOW" }
+    private fun pctSigned(v: Double): String = String.format(Locale.US, "%+.3f%%", v * 100.0)
+    private fun shelfWord(v: Double): String = when { v >= 5.0 -> "VERY STRONG"; v >= 3.0 -> "STRONG"; v >= 1.8 -> "MEDIUM"; else -> "LIGHT" }
     private fun money(v: Double): String = String.format(Locale.US, "%.2f", v)
     private fun qty(v: Double): String = when { v >= 1000 -> String.format(Locale.US, "%.2f", v); v >= 1 -> String.format(Locale.US, "%.4f", v); else -> String.format(Locale.US, "%.8f", v) }
     private fun fmt(v: Double): String = when {
