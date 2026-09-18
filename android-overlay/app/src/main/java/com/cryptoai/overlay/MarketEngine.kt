@@ -31,7 +31,8 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         val sourcesTotal: Int,
         val reason: String,
         val liquidity: LiquidityHuntModel.Result,
-        val actor: ActorStateModel.Result
+        val actor: ActorStateModel.Result,
+        val ethPerp: EthPerpTimingModel.Result?
     )
 
     private data class VenueState(
@@ -53,6 +54,9 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
     private val tradeEvents = ArrayDeque<Triple<Long, Double, Boolean>>()
     private val liquidityHunt = LiquidityHuntModel()
     private val actorState = ActorStateModel()
+    private val ethPerpTiming = EthPerpTimingModel()
+    private val btcHistory = ArrayDeque<Pair<Long, Double>>()
+    @Volatile private var btcPrice = 0.0
     private val client = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
     private val sockets = mutableListOf<WebSocket>()
     private var stopped = false
@@ -66,6 +70,7 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         startKraken()
         startOkx()
         startBinance()
+        if (base == "ETH") startBitcoinLead()
     }
 
     fun stop() {
@@ -89,6 +94,64 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
             override fun onMessage(w: WebSocket, text: String) { try { parseCoinbase(JSONObject(text)) } catch (_: Exception) {} }
             override fun onFailure(w: WebSocket, t: Throwable, r: Response?) { emit("Coinbase reconnecting") }
         })
+    }
+
+    private fun startBitcoinLead() {
+        open("wss://advanced-trade-ws.coinbase.com", object : WebSocketListener() {
+            override fun onOpen(w: WebSocket, r: Response) {
+                w.send(
+                    JSONObject()
+                        .put("type", "subscribe")
+                        .put("product_ids", JSONArray().put("BTC-USD"))
+                        .put("channel", "ticker")
+                        .toString()
+                )
+            }
+
+            override fun onMessage(w: WebSocket, text: String) {
+                try {
+                    val j = JSONObject(text)
+                    if (j.optString("channel") != "ticker") return
+                    val events = j.optJSONArray("events") ?: return
+                    val now = System.currentTimeMillis()
+                    for (i in 0 until events.length()) {
+                        val tickers = events.getJSONObject(i).optJSONArray("tickers") ?: continue
+                        for (k in 0 until tickers.length()) {
+                            val t = tickers.getJSONObject(k)
+                            if (t.optString("product_id") != "BTC-USD") continue
+                            val bid = t.optString("best_bid").toDoubleOrNull() ?: 0.0
+                            val ask = t.optString("best_ask").toDoubleOrNull() ?: 0.0
+                            val price = t.optString("price").toDoubleOrNull() ?: 0.0
+                            val mid = if (bid > 0.0 && ask >= bid) (bid + ask) / 2.0 else price
+                            if (mid > 0.0) {
+                                btcPrice = mid
+                                synchronized(btcHistory) {
+                                    if (btcHistory.isEmpty() || now - btcHistory.last().first >= 200L) {
+                                        btcHistory.addLast(now to mid)
+                                    }
+                                    while (btcHistory.isNotEmpty() && now - btcHistory.first().first > 90_000L) {
+                                        btcHistory.removeFirst()
+                                    }
+                                }
+                                emit()
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        })
+    }
+
+    private fun btcMove(seconds: Int): Double {
+        val now = System.currentTimeMillis()
+        synchronized(btcHistory) {
+            if (btcHistory.size < 2) return 0.0
+            val cutoff = now - seconds * 1000L
+            val first = btcHistory.firstOrNull { it.first >= cutoff } ?: btcHistory.first()
+            val last = btcHistory.last()
+            if (first.second <= 0.0) return 0.0
+            return ((last.second - first.second) / first.second).coerceIn(-0.03, 0.03)
+        }
     }
 
     private fun startKraken() {
@@ -282,10 +345,29 @@ class MarketEngine(private val product: String, private val update: (Snapshot) -
         if (spoof >= 55) reasons += "order book cancellation risk elevated"
         val reason = reasons.take(4).joinToString(" • ")
 
+        val ethPerp = if (base == "ETH") {
+            ethPerpTiming.evaluate(
+                bid = bid,
+                ask = ask,
+                bids = bids,
+                asks = asks,
+                imbalance = imbalance,
+                flow = flow,
+                ethMomentum = coinbaseMomentum,
+                crossVenueMomentum = crossVenueMomentum,
+                spoofRisk = spoof,
+                btcPrice = btcPrice,
+                btcMove15 = btcMove(15),
+                btcMove60 = btcMove(60),
+                fallbackSupport = support,
+                fallbackResistance = resistance
+            )
+        } else null
+
         update(Snapshot(product, bid, ask, imbalance, spoof, signal, confidence, target, invalidation,
             statusOverride ?: "LIVE • $sourcesLive/${venues.size} feeds • LIQUIDITY + ACTOR STATE",
             buyLow, buyHigh, support, resistance, coinbaseMomentum, crossVenueMomentum,
-            spreadPct, sourcesLive, venues.size, reason, hunt, actor))
+            spreadPct, sourcesLive, venues.size, reason, hunt, actor, ethPerp))
     }
 
     private fun momentumFor(v: VenueState, seconds: Long): Double {
