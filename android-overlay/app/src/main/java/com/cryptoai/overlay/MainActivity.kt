@@ -23,7 +23,7 @@ class MainActivity : AppCompatActivity() {
         fun label(text: String, size: Float = 14f, bold: Boolean = false) = TextView(this).apply { this.text=text; textSize=size; if(bold)setTypeface(typeface,Typeface.BOLD) }
 
         val title=label("Twisted Psyche Crypto",24f,true)
-        val sub=label("Mobile v0.8 • same current market logic as the PC build: fresh Coinbase USD scan, 1m / 5m / 15m windows, 30-day regime context, and dollar-size-aware liquidity/slippage.")
+        val sub=label("Mobile v1.3 • ETH PERP mode is now the default. It watches ETH shelves and order-flow live while Bitcoin runs in the background as a lead/confirmation signal for fast LONG and SHORT timing.")
         val scanTitle=label("\nFRESH MARKET-WIDE SCAN",18f,true)
         val scanStatus=label("Starting fresh scan…",17f,true)
         val scanProgress=label("Loading live pairs…",13f)
@@ -42,8 +42,9 @@ class MainActivity : AppCompatActivity() {
         val topList=label("",13f)
         val rescan=Button(this).apply{text="RESCAN ALL LIVE PAIRS FOR THIS AMOUNT"}
         val useSuggested=Button(this).apply{text="USE BEST SUGGESTED PAIR";isEnabled=false}
-        val pair=EditText(this).apply{hint="Token pair, e.g. VVV-USD or BTC-USD";setText("BTC-USD");textSize=18f}
+        val pair=EditText(this).apply{hint="Token pair, e.g. ETH-USD or BTC-USD";setText("ETH-USD");textSize=18f}
         val feeNote=label("Profit estimates use the selected dollar amount, visible ask depth, weighted fill price, spread/slippage and a conservative 0.60% fee each side. A larger amount does not turn a negative percentage edge positive and may worsen slippage.",13f)
+        val ethStart=Button(this).apply{text="START ETH PERP LONG/SHORT MODE + BTC WATCH"}
         val start=Button(this).apply{text="START / REFRESH FLOATING FORECAST"}
         val stop=Button(this).apply{text="STOP FORECAST + CLOSE OVERLAY"}
         val exit=Button(this).apply{text="EXIT APP"}
@@ -54,9 +55,9 @@ class MainActivity : AppCompatActivity() {
         val keyName=EditText(this).apply{hint="Coinbase API key name";inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS}
         val privateKey=EditText(this).apply{hint="Coinbase EC private key";minLines=4;maxLines=8;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS}
         accountBox.addView(accountNote);accountBox.addView(keyName);accountBox.addView(privateKey)
-        val explanation=label("The phone now evaluates the same three trade windows as PC. It only marks a setup clean when estimated net profit is positive after costs and its score/risk-reward clear the current thresholds. Estimates are not guarantees.")
+        val explanation=label("For ETH, the floating overlay now shows LONG NOW / SHORT NOW / PREPARE / WAIT, multiple support and resistance shelves, long and short trigger zones, targets, invalidation levels, BTC 15s/60s direction, and whether BTC is confirming or fighting the ETH move. These are probabilistic timing signals, not guaranteed turns.")
 
-        listOf<View>(title,sub,scanTitle,scanStatus,scanProgress,amountTitle,amountSpinner,customAmount,best1,best5,best15,suggested,topList,rescan,useSuggested,pair,feeNote,start,stop,exit,splitHint,accountToggle,accountBox,explanation).forEach{box.addView(it)}
+        listOf<View>(title,sub,scanTitle,scanStatus,scanProgress,amountTitle,amountSpinner,customAmount,best1,best5,best15,suggested,topList,rescan,useSuggested,pair,feeNote,ethStart,start,stop,exit,splitHint,accountToggle,accountBox,explanation).forEach{box.addView(it)}
         scroll.addView(box);setContentView(scroll)
 
         fun selectedBankroll():Double=when(amountSpinner.selectedItemPosition){0->50.0;1->100.0;2->150.0;else->customAmount.text.toString().toDoubleOrNull()?.coerceAtLeast(1.0)?:100.0}
@@ -95,6 +96,7 @@ class MainActivity : AppCompatActivity() {
         rescan.setOnClickListener{runScan()}
         useSuggested.setOnClickListener{val r=lastScan?:return@setOnClickListener;val p=r.suggestedProduct?:return@setOnClickListener;pair.setText(p);launchOverlay()}
         accountToggle.setOnClickListener{accountBox.visibility=if(accountBox.visibility==View.VISIBLE)View.GONE else View.VISIBLE}
+        ethStart.setOnClickListener{pair.setText("ETH-USD");launchOverlay()}
         start.setOnClickListener{launchOverlay()};stop.setOnClickListener{stopService(Intent(this,OverlayService::class.java));Toast.makeText(this,"Live forecast stopped.",Toast.LENGTH_SHORT).show()};exit.setOnClickListener{scanner?.stop();stopService(Intent(this,OverlayService::class.java));finishAndRemoveTask()}
         runScan()
     }
